@@ -17,13 +17,13 @@ import (
 )
 
 var (
-	testDir          string
-	issuerCertPath   string
-	ocspCertPath     string
-	ocspKeyPath      string
-	issuerKey        *rsa.PrivateKey
-	issuerCert       *x509.Certificate
-	ocspCert         *x509.Certificate
+	testDir        string
+	issuerCertPath string
+	ocspCertPath   string
+	ocspKeyPath    string
+	issuerKey      *rsa.PrivateKey
+	issuerCert     *x509.Certificate
+	ocspCert       *x509.Certificate
 )
 
 func TestMain(m *testing.M) {
@@ -40,12 +40,12 @@ func TestMain(m *testing.M) {
 	}
 	issuerKey = issuerKeyTmp
 	issuerTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "Test Issuer"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		IsCA:         true,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Test Issuer"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
 		BasicConstraintsValid: true,
 	}
 	issuerDER, err := x509.CreateCertificate(rand.Reader, issuerTmpl, issuerTmpl, &issuerKey.PublicKey, issuerKey)

@@ -36,15 +36,15 @@ type SignerConfig struct {
 }
 
 type SourceConfig struct {
-	Type   string          `yaml:"type"`
+	Type   string             `yaml:"type"`
 	File   FileSourceConfig   `yaml:"file"`
 	HTTP   HTTPSourceConfig   `yaml:"http"`
 	Static StaticSourceConfig `yaml:"static"`
 }
 
 type FileSourceConfig struct {
-	CRLPath         string `yaml:"crl_path"`
-	ReloadInterval  string `yaml:"reload_interval"`
+	CRLPath        string `yaml:"crl_path"`
+	ReloadInterval string `yaml:"reload_interval"`
 }
 
 type HTTPSourceConfig struct {
@@ -98,18 +98,43 @@ func (c *Config) validate() error {
 	}
 
 	switch c.Source.Type {
-	case "file", "http", "static":
+	case "file":
+		if c.Source.File.CRLPath == "" {
+			return errors.New("ocsp-responder/config: source.file.crl_path must be set when source.type is 'file'")
+		}
+		if c.Source.File.ReloadInterval == "" {
+			return errors.New("ocsp-responder/config: source.file.reload_interval must be set when source.type is 'file'")
+		}
+		if _, err := time.ParseDuration(c.Source.File.ReloadInterval); err != nil {
+			return fmt.Errorf("ocsp-responder/config: invalid source.file.reload_interval: %w", err)
+		}
+	case "http":
+		if c.Source.HTTP.BaseURL == "" {
+			return errors.New("ocsp-responder/config: source.http.base_url must be set when source.type is 'http'")
+		}
+		if c.Source.HTTP.Timeout == "" {
+			return errors.New("ocsp-responder/config: source.http.timeout must be set when source.type is 'http'")
+		}
+		if _, err := time.ParseDuration(c.Source.HTTP.Timeout); err != nil {
+			return fmt.Errorf("ocsp-responder/config: invalid source.http.timeout: %w", err)
+		}
+	case "static":
+		if c.Source.Static.Status == "" {
+			return errors.New("ocsp-responder/config: source.static.status must be set when source.type is 'static'")
+		}
+		if c.Source.Static.Status != "good" && c.Source.Static.Status != "revoked" && c.Source.Static.Status != "unknown" {
+			return fmt.Errorf("ocsp-responder/config: invalid source.static.status %q (must be 'good', 'revoked', or 'unknown')", c.Source.Static.Status)
+		}
 	default:
 		return fmt.Errorf("ocsp-responder/config: invalid source.type %q", c.Source.Type)
 	}
 
 	if _, err := time.ParseDuration(c.Signer.ResponseValidity); err != nil {
-		return fmt.Errorf("ocsp-responder/config: %w", err)
+		return fmt.Errorf("ocsp-responder/config: invalid signer.response_validity: %w", err)
 	}
 	if _, err := time.ParseDuration(c.Cache.TTL); err != nil {
-		return fmt.Errorf("ocsp-responder/config: %w", err)
+		return fmt.Errorf("ocsp-responder/config: invalid cache.ttl: %w", err)
 	}
 
 	return nil
 }
-

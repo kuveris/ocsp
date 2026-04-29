@@ -75,4 +75,3 @@ func ServeHealth(sgn *signer.Signer, src source.Source) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(payload)
 	}
 }
-

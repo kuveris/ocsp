@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ocsp"
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"golang.org/x/crypto/ocsp"
 )
 
 // Responder processes OCSP requests and returns signed responses.

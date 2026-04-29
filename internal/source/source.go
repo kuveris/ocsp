@@ -40,4 +40,3 @@ var (
 	ErrSourceUnhealthy = errors.New("ocsp-responder/source: source is not healthy")
 	ErrInvalidCRL      = errors.New("ocsp-responder/source: invalid or unparseable CRL")
 )
-

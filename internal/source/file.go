@@ -139,4 +139,3 @@ func (s *FileSource) loadFromDisk() error {
 	s.loaded.Store(true)
 	return nil
 }
-

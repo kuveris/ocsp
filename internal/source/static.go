@@ -47,4 +47,3 @@ func (s *StaticSource) Name() string {
 func (s *StaticSource) Healthy() bool {
 	return true
 }
-

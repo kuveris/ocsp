@@ -1,0 +1,45 @@
+# Example configuration for ocsp-responder.
+
+server:
+  listen_addr: "0.0.0.0:8080"
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+
+signer:
+  # OCSP delegated signing certificate + key.
+  # Must have extKeyUsage OCSPSigning.
+  cert_file: "certs/ocsp-signer.crt"
+  key_file:  "certs/ocsp-signer.key"
+
+  # Issuer certificate of the end-entity certificates checked by this responder.
+  issuer_cert_file: "certs/intermediate-ca.crt"
+
+  # Validity window for issued OCSP responses (NextUpdate).
+  response_validity: "24h"
+
+source:
+  type: "file"   # "file" | "http" | "static"
+
+  file:
+    crl_path: "certs/ca.crl"        # PEM or DER
+    reload_interval: "5m"           # Checks for changes
+
+  http:
+    base_url: "https://ca.example.local:9000"
+    root_cert_file: "certs/root-ca.crt"
+    timeout: "10s"
+
+  static:
+    status: "good"   # "good" | "revoked" | "unknown"
+
+cache:
+  enabled: true
+  ttl: "1h"
+  max_entries: 10000
+
+logging:
+  level: "info"    # debug | info | warn | error
+  format: "json"   # json | text
+

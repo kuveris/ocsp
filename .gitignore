@@ -1,0 +1,8 @@
+certs/*.crt
+certs/*.key
+certs/*.pem
+certs/*.der
+certs/*.crl
+certs/*.p12
+ocsp-responder
+

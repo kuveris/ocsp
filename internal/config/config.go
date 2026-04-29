@@ -133,8 +133,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("ocsp-responder/config: invalid source.type %q", c.Source.Type)
 	}
 
-	if _, err := time.ParseDuration(c.Signer.ResponseValidity); err != nil {
+	responseValidity, err := time.ParseDuration(c.Signer.ResponseValidity)
+	if err != nil {
 		return fmt.Errorf("ocsp-responder/config: invalid signer.response_validity: %w", err)
+	}
+	if responseValidity <= 0 {
+		return errors.New("ocsp-responder/config: signer.response_validity must be greater than 0")
 	}
 	if _, err := time.ParseDuration(c.Cache.TTL); err != nil {
 		return fmt.Errorf("ocsp-responder/config: invalid cache.ttl: %w", err)

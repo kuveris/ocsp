@@ -105,8 +105,12 @@ func (c *Config) validate() error {
 		if c.Source.File.ReloadInterval == "" {
 			return errors.New("ocsp-responder/config: source.file.reload_interval must be set when source.type is 'file'")
 		}
-		if _, err := time.ParseDuration(c.Source.File.ReloadInterval); err != nil {
+		reloadInterval, err := time.ParseDuration(c.Source.File.ReloadInterval)
+		if err != nil {
 			return fmt.Errorf("ocsp-responder/config: invalid source.file.reload_interval: %w", err)
+		}
+		if reloadInterval <= 0 {
+			return errors.New("ocsp-responder/config: source.file.reload_interval must be greater than 0")
 		}
 	case "http":
 		if c.Source.HTTP.BaseURL == "" {

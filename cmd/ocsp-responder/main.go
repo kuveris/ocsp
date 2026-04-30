@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/hartmann-it/ocsp-responder/internal/config"
@@ -39,8 +42,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start expiry monitor with a context that is cancelled on SIGTERM/SIGINT.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	sgn.StartExpiryMonitor(ctx, logger)
+
+	metrics := server.NewMetrics()
+
 	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
-	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, logger)
+	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, metrics, logger)
 
 	srv := server.New(cfg, resp, sgn, src, logger)
 	if err := srv.Start(); err != nil {
@@ -80,7 +90,24 @@ func newSource(cfg *config.Config) (source.Source, error) {
 	case "static":
 		return source.NewStaticSource(cfg.Source.Static.Status)
 	case "http":
-		return nil, fmt.Errorf("ocsp-responder: http source is not yet implemented (Phase 2)")
+		timeout, _ := time.ParseDuration(cfg.Source.HTTP.Timeout)
+		retryBackoff, _ := time.ParseDuration(cfg.Source.HTTP.RetryBackoff)
+		cacheTTL, _ := time.ParseDuration(cfg.Source.HTTP.CacheTTL)
+		mapping := source.ResponseMapping{
+			PathTemplate:  cfg.Source.HTTP.Mapping.PathTemplate,
+			StatusField:   cfg.Source.HTTP.Mapping.StatusField,
+			GoodValues:    cfg.Source.HTTP.Mapping.GoodValues,
+			RevokedValues: cfg.Source.HTTP.Mapping.RevokedValues,
+		}
+		return source.NewHTTPSource(
+			cfg.Source.HTTP.BaseURL,
+			cfg.Source.HTTP.RootCertFile,
+			timeout,
+			mapping,
+			cfg.Source.HTTP.RetryMax,
+			retryBackoff,
+			cacheTTL,
+		)
 	default:
 		return nil, fmt.Errorf("ocsp-responder: unknown source type %q", cfg.Source.Type)
 	}

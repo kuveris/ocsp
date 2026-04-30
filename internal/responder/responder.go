@@ -14,13 +14,23 @@ import (
 	"golang.org/x/crypto/ocsp"
 )
 
+// MetricsRecorder is the optional interface for recording request metrics.
+// Implementations must be safe for concurrent use.
+type MetricsRecorder interface {
+	RecordRequest(method, status string, durationSeconds float64)
+	RecordSourceRequest(sourceName, result string)
+	RecordCacheHit()
+	RecordCacheMiss()
+}
+
 // Responder processes OCSP requests and returns signed responses.
 // It wraps the Source with an in-memory cache.
 type Responder struct {
-	source source.Source
-	signer signer
-	cache  *cache
-	logger *slog.Logger
+	source  source.Source
+	signer  signer
+	cache   *cache
+	metrics MetricsRecorder
+	logger  *slog.Logger
 }
 
 type signer interface {
@@ -28,7 +38,7 @@ type signer interface {
 	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error)
 }
 
-func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, logger *slog.Logger) *Responder {
+func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, metrics MetricsRecorder, logger *slog.Logger) *Responder {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -41,7 +51,8 @@ func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntr
 			maxEntries: maxEntries,
 			enabled:    cacheEnabled,
 		},
-		logger: logger,
+		metrics: metrics,
+		logger:  logger,
 	}
 }
 
@@ -58,19 +69,34 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 
 	if data, ok := r.cache.get(key); ok {
 		r.logger.Info("ocsp", "serial", serialHex(serial), "status", "cached", "source", r.source.Name(), "cache_hit", true, "duration_ms", time.Since(start).Milliseconds())
+		if r.metrics != nil {
+			r.metrics.RecordCacheHit()
+		}
 		return data, nil
+	}
+
+	if r.metrics != nil {
+		r.metrics.RecordCacheMiss()
 	}
 
 	status := source.StatusUnknown
 	var revInfo *source.RevocationInfo
-	cs, err := r.source.GetStatus(serial, r.signer.IssuerCert())
-	if err == nil && cs != nil {
+	cs, srcErr := r.source.GetStatus(serial, r.signer.IssuerCert())
+	if srcErr == nil && cs != nil {
 		status = cs.Status
 		revInfo = cs.RevocationInfo
 	}
-	if err != nil {
+	if srcErr != nil {
 		status = source.StatusUnknown
 		revInfo = nil
+	}
+
+	if r.metrics != nil {
+		result := "ok"
+		if srcErr != nil {
+			result = "error"
+		}
+		r.metrics.RecordSourceRequest(r.source.Name(), result)
 	}
 
 	der, err := r.signer.CreateResponse(serial, status, revInfo, time.Now())

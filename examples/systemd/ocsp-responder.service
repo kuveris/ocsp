@@ -1,0 +1,22 @@
+[Unit]
+Description=OCSP Responder
+Documentation=https://github.com/hartmann-it/ocsp-responder
+After=network.target
+
+[Service]
+Type=simple
+User=ocsp
+Group=ocsp
+ExecStart=/usr/local/bin/ocsp-responder --config /etc/ocsp-responder/ocsp-responder.yaml
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/ocsp-responder
+ReadOnlyPaths=/etc/ocsp-responder /etc/ssl/certs
+
+[Install]
+WantedBy=multi-user.target

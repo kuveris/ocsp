@@ -58,10 +58,12 @@ func ServeHealth(sgn *signer.Signer, src source.Source) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		_ = req
 		payload := map[string]any{
-			"status":         "ok",
-			"signer_valid":   sgn.Valid(),
-			"source":         src.Name(),
-			"source_healthy": src.Healthy(),
+			"status":                 "ok",
+			"signer_valid":           sgn.Valid(),
+			"signer_expires_in_days": sgn.DaysUntilExpiry(),
+			"signer_expiry_status":   signer.ExpiryStatusString(sgn.GetExpiryStatus()),
+			"source":                 src.Name(),
+			"source_healthy":         src.Healthy(),
 		}
 
 		status := http.StatusOK

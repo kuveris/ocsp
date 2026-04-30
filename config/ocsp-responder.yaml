@@ -6,6 +6,7 @@ server:
     enabled: false
     cert_file: ""
     key_file: ""
+    min_version: "1.2"    # "1.2" | "1.3"
 
 signer:
   # OCSP delegated signing certificate + key.
@@ -28,8 +29,16 @@ source:
 
   http:
     base_url: "https://ca.example.local:9000"
-    root_cert_file: "certs/root-ca.crt"
+    root_cert_file: "certs/root-ca.crt"   # optional: TLS pinning
     timeout: "10s"
+    retry_max: 3
+    retry_backoff: "500ms"
+    cache_ttl: "5m"
+    response_mapping:
+      path_template: "/1.0/certificates/{serial}"
+      status_field: "status"
+      good_values: ["active", "valid"]
+      revoked_values: ["revoked", "suspended"]
 
   static:
     status: "good"   # "good" | "revoked" | "unknown"

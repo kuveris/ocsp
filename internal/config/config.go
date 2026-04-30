@@ -23,9 +23,10 @@ type ServerConfig struct {
 }
 
 type TLSConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	Enabled    bool   `yaml:"enabled"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	MinVersion string `yaml:"min_version"` // "1.2" | "1.3", default "1.2"
 }
 
 type SignerConfig struct {
@@ -48,9 +49,21 @@ type FileSourceConfig struct {
 }
 
 type HTTPSourceConfig struct {
-	BaseURL      string `yaml:"base_url"`
-	RootCertFile string `yaml:"root_cert_file"`
-	Timeout      string `yaml:"timeout"`
+	BaseURL      string          `yaml:"base_url"`
+	RootCertFile string          `yaml:"root_cert_file"`
+	Timeout      string          `yaml:"timeout"`
+	RetryMax     int             `yaml:"retry_max"`
+	RetryBackoff string          `yaml:"retry_backoff"`
+	CacheTTL     string          `yaml:"cache_ttl"`
+	Mapping      ResponseMapping `yaml:"response_mapping"`
+}
+
+// ResponseMapping describes how to interpret CA API responses.
+type ResponseMapping struct {
+	PathTemplate  string   `yaml:"path_template"`
+	StatusField   string   `yaml:"status_field"`
+	GoodValues    []string `yaml:"good_values"`
+	RevokedValues []string `yaml:"revoked_values"`
 }
 
 type StaticSourceConfig struct {
@@ -121,6 +134,21 @@ func (c *Config) validate() error {
 		}
 		if _, err := time.ParseDuration(c.Source.HTTP.Timeout); err != nil {
 			return fmt.Errorf("ocsp-responder/config: invalid source.http.timeout: %w", err)
+		}
+		if c.Source.HTTP.RetryBackoff != "" {
+			if _, err := time.ParseDuration(c.Source.HTTP.RetryBackoff); err != nil {
+				return fmt.Errorf("ocsp-responder/config: invalid source.http.retry_backoff: %w", err)
+			}
+		} else {
+			c.Source.HTTP.RetryBackoff = "500ms"
+		}
+		if c.Source.HTTP.RetryMax == 0 {
+			c.Source.HTTP.RetryMax = 3
+		}
+		if c.Source.HTTP.CacheTTL != "" {
+			if _, err := time.ParseDuration(c.Source.HTTP.CacheTTL); err != nil {
+				return fmt.Errorf("ocsp-responder/config: invalid source.http.cache_ttl: %w", err)
+			}
 		}
 	case "static":
 		if c.Source.Static.Status == "" {

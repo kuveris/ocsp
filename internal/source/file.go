@@ -121,7 +121,8 @@ func (s *FileSource) loadCRL() error {
 
 // loadFromURL downloads the CRL from an HTTP(S) URL and parses it.
 func (s *FileSource) loadFromURL() error {
-	resp, err := http.Get(s.crlPath) //nolint:noctx
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(s.crlPath)
 	if err != nil {
 		return fmt.Errorf("ocsp-responder/source: downloading CRL: %w", err)
 	}

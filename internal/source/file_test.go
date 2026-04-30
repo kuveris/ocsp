@@ -219,15 +219,12 @@ func TestFileSource_HTTPDownloadFails(t *testing.T) {
 }
 
 func TestFileSource_HTTPTimeout(t *testing.T) {
+	// Server that hangs — close it immediately so the initial download fails
+	// with a connection refused error, simulating an unreachable server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// hang forever
-		select {}
+		// The server is closed before any request completes.
 	}))
-	defer srv.Close()
-
-	// Use a very short timeout by relying on the server being closed
-	// after a short period — we close the server immediately.
-	srv.Close()
+	srv.Close() // close before NewFileSource tries to connect
 
 	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
 	if err == nil {

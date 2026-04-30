@@ -176,6 +176,10 @@ Any CA with an HTTP API that returns certificate status can be used with the
   caching is safe and recommended
 - **Request size limit** — request bodies are limited to 10 KB (OCSP requests are
   typically under 1 KB)
+- **Issuer binding checks** — incoming OCSP requests are validated against the configured
+  issuer certificate hash bindings before status lookup
+- **CRL trust checks** — file/URL CRLs are validated against the configured issuer before
+  revocation entries are used
 
 ## HTTP Endpoints
 
@@ -197,6 +201,9 @@ Any CA with an HTTP API that returns certificate status can be used with the
 | `ocsp_cache_misses_total` | Counter | Cache misses |
 | `ocsp_signer_days_until_expiry` | Gauge | Days until the signing certificate expires |
 | `ocsp_source_requests_total{source,result}` | Counter | Requests to the status source |
+| `ocsp_source_request_duration_seconds{source}` | Histogram | Source request latency |
+| `ocsp_source_retries_total{source}` | Counter | Source retries |
+| `ocsp_source_errors_total{source,class}` | Counter | Source error classes |
 
 ## Building
 

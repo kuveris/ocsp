@@ -35,7 +35,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	validity, _ := time.ParseDuration(cfg.Signer.ResponseValidity)
+	validity, err := time.ParseDuration(cfg.Signer.ResponseValidity)
+	if err != nil {
+		logger.Error("invalid signer response validity", "value", cfg.Signer.ResponseValidity, "err", err)
+		os.Exit(1)
+	}
 	sgn, err := signer.NewSigner(cfg.Signer.CertFile, cfg.Signer.KeyFile, cfg.Signer.IssuerCertFile, validity)
 	if err != nil {
 		logger.Error("failed to create signer", "err", err)
@@ -47,10 +51,17 @@ func main() {
 	defer cancel()
 
 	metrics := server.NewMetrics()
+	if httpSource, ok := src.(*source.HTTPSource); ok {
+		httpSource.SetObserver(metrics)
+	}
 
 	sgn.StartExpiryMonitor(ctx, logger, metrics.SignerDaysLeft)
 
-	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
+	cacheTTL, err := time.ParseDuration(cfg.Cache.TTL)
+	if err != nil {
+		logger.Error("invalid cache ttl", "value", cfg.Cache.TTL, "err", err)
+		os.Exit(1)
+	}
 	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, metrics, metrics.CacheEntries, logger)
 
 	srv := server.New(cfg, resp, sgn, src, metrics, logger)
@@ -86,14 +97,32 @@ func buildLogger(level, format string) *slog.Logger {
 func newSource(cfg *config.Config) (source.Source, error) {
 	switch cfg.Source.Type {
 	case "file":
-		interval, _ := time.ParseDuration(cfg.Source.File.ReloadInterval)
+		interval, err := time.ParseDuration(cfg.Source.File.ReloadInterval)
+		if err != nil {
+			return nil, fmt.Errorf("ocsp-responder: invalid file reload interval: %w", err)
+		}
 		return source.NewFileSource(cfg.Source.File.CRLPath, interval)
 	case "static":
 		return source.NewStaticSource(cfg.Source.Static.Status)
 	case "http":
-		timeout, _ := time.ParseDuration(cfg.Source.HTTP.Timeout)
-		retryBackoff, _ := time.ParseDuration(cfg.Source.HTTP.RetryBackoff)
-		cacheTTL, _ := time.ParseDuration(cfg.Source.HTTP.CacheTTL)
+		timeout, err := time.ParseDuration(cfg.Source.HTTP.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("ocsp-responder: invalid HTTP source timeout: %w", err)
+		}
+		retryBackoff := 500 * time.Millisecond
+		if cfg.Source.HTTP.RetryBackoff != "" {
+			retryBackoff, err = time.ParseDuration(cfg.Source.HTTP.RetryBackoff)
+			if err != nil {
+				return nil, fmt.Errorf("ocsp-responder: invalid HTTP source retry backoff: %w", err)
+			}
+		}
+		cacheTTL := time.Duration(0)
+		if cfg.Source.HTTP.CacheTTL != "" {
+			cacheTTL, err = time.ParseDuration(cfg.Source.HTTP.CacheTTL)
+			if err != nil {
+				return nil, fmt.Errorf("ocsp-responder: invalid HTTP source cache ttl: %w", err)
+			}
+		}
 		mapping := source.ResponseMapping{
 			PathTemplate:  cfg.Source.HTTP.Mapping.PathTemplate,
 			StatusField:   cfg.Source.HTTP.Mapping.StatusField,

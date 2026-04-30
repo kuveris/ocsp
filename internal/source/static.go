@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/x509"
 	"fmt"
 	"math/big"
@@ -29,7 +30,10 @@ func NewStaticSource(statusStr string) (*StaticSource, error) {
 	return &StaticSource{status: st}, nil
 }
 
-func (s *StaticSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+func (s *StaticSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	_ = serial
 	_ = issuer
 

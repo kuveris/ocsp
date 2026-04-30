@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -26,6 +27,7 @@ type FileSource struct {
 
 	mu      sync.RWMutex
 	revoked map[string]pkix.RevokedCertificate
+	crl     *x509.RevocationList
 	loaded  atomic.Bool
 
 	lastModMu sync.RWMutex
@@ -49,15 +51,27 @@ func (s *FileSource) Name() string { return "file" }
 
 func (s *FileSource) Healthy() bool { return s.loaded.Load() }
 
-func (s *FileSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
-	_ = issuer
+func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !s.loaded.Load() {
 		return nil, ErrSourceUnhealthy
+	}
+	if issuer == nil {
+		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate required")
 	}
 
 	s.mu.RLock()
 	rev, ok := s.revoked[serial.String()]
+	currentCRL := s.crl
 	s.mu.RUnlock()
+	if currentCRL == nil {
+		return nil, ErrSourceUnhealthy
+	}
+	if err := verifyCRLForIssuer(currentCRL, issuer); err != nil {
+		return nil, err
+	}
 
 	if ok {
 		reason := 0
@@ -183,8 +197,19 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 
 	s.mu.Lock()
 	s.revoked = revoked
+	s.crl = rl
 	s.mu.Unlock()
 
 	s.loaded.Store(true)
+	return nil
+}
+
+func verifyCRLForIssuer(rl *x509.RevocationList, issuer *x509.Certificate) error {
+	if rl.Issuer.String() != issuer.Subject.String() {
+		return fmt.Errorf("ocsp-responder/source: CRL issuer mismatch")
+	}
+	if err := rl.CheckSignatureFrom(issuer); err != nil {
+		return fmt.Errorf("ocsp-responder/source: CRL signature verification failed: %w", err)
+	}
 	return nil
 }

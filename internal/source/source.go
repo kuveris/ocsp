@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"math/big"
@@ -31,7 +32,7 @@ type CertStatus struct {
 // Source is the pluggable interface for certificate status backends.
 // Implementations must be safe for concurrent use.
 type Source interface {
-	GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error)
+	GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error)
 	Name() string
 	Healthy() bool
 }

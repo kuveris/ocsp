@@ -17,13 +17,15 @@ import (
 )
 
 var (
-	testDir        string
-	issuerCertPath string
-	ocspCertPath   string
-	ocspKeyPath    string
-	issuerKey      *rsa.PrivateKey
-	issuerCert     *x509.Certificate
-	ocspCert       *x509.Certificate
+	testDir          string
+	issuerCertPath   string
+	ocspCertPath     string
+	ocspKeyPath      string
+	expiredCertPath  string
+	expiredKeyPath   string
+	issuerKey        *rsa.PrivateKey
+	issuerCert       *x509.Certificate
+	ocspCert         *x509.Certificate
 )
 
 func TestMain(m *testing.M) {
@@ -89,6 +91,32 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	if err := os.WriteFile(ocspKeyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(ocspKey)}), 0o600); err != nil {
+		os.Exit(1)
+	}
+
+	// Generate expired OCSP signing cert.
+	expiredKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		os.Exit(1)
+	}
+	expiredTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(99),
+		Subject:      pkix.Name{CommonName: "Expired OCSP Signer"},
+		NotBefore:    time.Now().Add(-48 * time.Hour),
+		NotAfter:     time.Now().Add(-1 * time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	expiredDER, err := x509.CreateCertificate(rand.Reader, expiredTmpl, issuerCert, &expiredKey.PublicKey, issuerKey)
+	if err != nil {
+		os.Exit(1)
+	}
+	expiredCertPath = filepath.Join(d, "expired.crt")
+	expiredKeyPath = filepath.Join(d, "expired.key")
+	if err := os.WriteFile(expiredCertPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: expiredDER}), 0o600); err != nil {
+		os.Exit(1)
+	}
+	if err := os.WriteFile(expiredKeyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(expiredKey)}), 0o600); err != nil {
 		os.Exit(1)
 	}
 
@@ -183,5 +211,15 @@ func TestSigner_SignatureVerifiable(t *testing.T) {
 	}
 	if _, err := xocsp.ParseResponseForCert(der, nil, issuerCert); err != nil {
 		t.Fatalf("signature verify failed: %v", err)
+	}
+}
+
+func TestSigner_ExpiredCert(t *testing.T) {
+	s, err := NewSigner(expiredCertPath, expiredKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("expected no error loading expired cert, got %v", err)
+	}
+	if s.Valid() {
+		t.Fatal("expected Valid() = false for expired cert")
 	}
 }

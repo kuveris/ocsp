@@ -109,7 +109,9 @@ func TestFileSource_Revoked(t *testing.T) {
 	}
 }
 
-func TestFileSource_Unknown(t *testing.T) {
+// TestFileSource_NotInCRL verifies that a serial not in the CRL returns StatusGood
+// (CRL is authoritative — absence from the list means the certificate is valid).
+func TestFileSource_NotInCRL(t *testing.T) {
 	s, err := NewFileSource(testCRLPath, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)

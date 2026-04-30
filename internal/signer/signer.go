@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
@@ -12,8 +13,18 @@ import (
 	"os"
 	"time"
 
-	cfocsp "github.com/cloudflare/cfssl/ocsp"
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	xocsp "golang.org/x/crypto/ocsp"
+)
+
+// ExpiryStatus describes how close the signer certificate is to expiry.
+type ExpiryStatus int
+
+const (
+	ExpiryOK       ExpiryStatus = iota // > 30 days remaining
+	ExpiryWarning                      // 8–30 days remaining
+	ExpiryCritical                     // < 8 days remaining
+	ExpiryExpired                      // already expired
 )
 
 // Signer holds the OCSP delegated signing certificate and private key.
@@ -62,42 +73,37 @@ func NewSigner(certFile, keyFile, issuerCertFile string, validity time.Duration)
 }
 
 func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error) {
-	ocspStatus := "unknown"
+	var ocspStatus int
 	var revokedAt time.Time
 	reason := 0
 
 	switch status {
 	case source.StatusGood:
-		ocspStatus = "good"
+		ocspStatus = xocsp.Good
 	case source.StatusRevoked:
-		ocspStatus = "revoked"
+		ocspStatus = xocsp.Revoked
 		if revInfo != nil {
 			revokedAt = revInfo.RevokedAt
 			reason = revInfo.Reason
 		}
 	case source.StatusUnknown:
-		ocspStatus = "unknown"
+		ocspStatus = xocsp.Unknown
 	default:
 		return nil, fmt.Errorf("ocsp-responder/signer: unsupported status %v", status)
 	}
 
-	cfSigner, err := cfocsp.NewSigner(s.issuerCert, s.cert, s.key, s.validity)
-	if err != nil {
-		return nil, fmt.Errorf("ocsp-responder/signer: %w", err)
+	template := xocsp.Response{
+		Status:           ocspStatus,
+		SerialNumber:     serial,
+		ThisUpdate:       thisUpdate,
+		NextUpdate:       thisUpdate.Add(s.validity),
+		IssuerHash:       crypto.SHA1,
+		Certificate:      s.cert,
+		RevokedAt:        revokedAt,
+		RevocationReason: reason,
 	}
 
-	req := cfocsp.SignRequest{
-		Certificate: s.issuerCert,
-		Status:      ocspStatus,
-		Reason:      reason,
-		RevokedAt:   revokedAt,
-		ThisUpdate:  &thisUpdate,
-	}
-
-	nextUpdate := thisUpdate.Add(s.validity)
-	req.NextUpdate = &nextUpdate
-
-	der, err := cfSigner.Sign(req)
+	der, err := xocsp.CreateResponse(s.issuerCert, s.cert, template, s.key)
 	if err != nil {
 		return nil, fmt.Errorf("ocsp-responder/signer: %w", err)
 	}
@@ -109,6 +115,72 @@ func (s *Signer) IssuerCert() *x509.Certificate { return s.issuerCert }
 func (s *Signer) Valid() bool {
 	now := time.Now()
 	return now.After(s.cert.NotBefore) && now.Before(s.cert.NotAfter)
+}
+
+// DaysUntilExpiry returns the number of complete days until the signing certificate expires.
+// Returns a negative number if the certificate is already expired.
+// The value is truncated (floor), so 7 days and 23 hours returns 7.
+func (s *Signer) DaysUntilExpiry() int {
+	return int(time.Until(s.cert.NotAfter).Hours() / 24)
+}
+
+// ExpiryStatus returns the current expiry status of the signing certificate.
+func (s *Signer) GetExpiryStatus() ExpiryStatus {
+	days := s.DaysUntilExpiry()
+	switch {
+	case days < 0:
+		return ExpiryExpired
+	case days < 8:
+		return ExpiryCritical
+	case days < 30:
+		return ExpiryWarning
+	default:
+		return ExpiryOK
+	}
+}
+
+// ExpiryStatusString returns a string representation of the expiry status.
+func ExpiryStatusString(es ExpiryStatus) string {
+	switch es {
+	case ExpiryOK:
+		return "ok"
+	case ExpiryWarning:
+		return "warning"
+	case ExpiryCritical:
+		return "critical"
+	case ExpiryExpired:
+		return "expired"
+	default:
+		return "unknown"
+	}
+}
+
+// StartExpiryMonitor starts a goroutine that logs signer certificate expiry status every 24 hours.
+// It stops when ctx is cancelled.
+func (s *Signer) StartExpiryMonitor(ctx context.Context, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				days := s.DaysUntilExpiry()
+				switch s.GetExpiryStatus() {
+				case ExpiryWarning:
+					logger.Warn("OCSP signer certificate expires soon", "days", days)
+				case ExpiryCritical:
+					logger.Error("OCSP signer certificate expires very soon", "days", days)
+				case ExpiryExpired:
+					logger.Error("OCSP signer certificate is EXPIRED")
+				}
+			}
+		}
+	}()
 }
 
 func loadCert(path string) (*x509.Certificate, error) {

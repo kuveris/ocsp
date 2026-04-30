@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -78,11 +79,11 @@ func writeCRL(path string, issuer *x509.Certificate, issuerKey *rsa.PrivateKey, 
 }
 
 func TestFileSource_Good(t *testing.T) {
-	s, err := NewFileSource(testCRLPath, 50*time.Millisecond)
+	s, err := NewFileSource(testCRLPath, 50*time.Millisecond, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
-	cs, err := s.GetStatus(big.NewInt(99), testIssuerCert)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -92,11 +93,11 @@ func TestFileSource_Good(t *testing.T) {
 }
 
 func TestFileSource_Revoked(t *testing.T) {
-	s, err := NewFileSource(testCRLPath, 50*time.Millisecond)
+	s, err := NewFileSource(testCRLPath, 50*time.Millisecond, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
-	cs, err := s.GetStatus(big.NewInt(42), testIssuerCert)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(42), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -114,11 +115,11 @@ func TestFileSource_Revoked(t *testing.T) {
 // TestFileSource_NotInCRL verifies that a serial not in the CRL returns StatusGood
 // (CRL is authoritative — absence from the list means the certificate is valid).
 func TestFileSource_NotInCRL(t *testing.T) {
-	s, err := NewFileSource(testCRLPath, 50*time.Millisecond)
+	s, err := NewFileSource(testCRLPath, 50*time.Millisecond, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
-	cs, err := s.GetStatus(big.NewInt(999), testIssuerCert)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(999), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestFileSource_InvalidCRL(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a crl"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := NewFileSource(path, 50*time.Millisecond); err == nil {
+	if _, err := NewFileSource(path, 50*time.Millisecond, testIssuerCert); err == nil {
 		t.Fatalf("expected error")
 	}
 }
@@ -148,11 +149,11 @@ func TestFileSource_Reload(t *testing.T) {
 		t.Fatalf("writeCRL: %v", err)
 	}
 
-	s, err := NewFileSource(path, 20*time.Millisecond)
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
-	if cs, err := s.GetStatus(big.NewInt(99), testIssuerCert); err != nil || cs.Status != StatusGood {
+	if cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); err != nil || cs.Status != StatusGood {
 		t.Fatalf("expected initial good for 99, got %v err=%v", cs.Status, err)
 	}
 
@@ -168,7 +169,7 @@ func TestFileSource_Reload(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		cs, err := s.GetStatus(big.NewInt(99), testIssuerCert)
+		cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert)
 		if err == nil && cs.Status == StatusRevoked {
 			return
 		}
@@ -190,14 +191,14 @@ func TestFileSource_HTTPDownload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	s, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
 	if !s.Healthy() {
 		t.Fatal("expected healthy")
 	}
-	cs, err := s.GetStatus(big.NewInt(42), testIssuerCert)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(42), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestFileSource_HTTPDownloadFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond, testIssuerCert)
 	if err == nil {
 		t.Fatal("expected error when server returns 500")
 	}
@@ -226,8 +227,41 @@ func TestFileSource_HTTPTimeout(t *testing.T) {
 	}))
 	srv.Close() // close before NewFileSource tries to connect
 
-	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond, testIssuerCert)
 	if err == nil {
 		t.Fatal("expected error when server is unreachable")
+	}
+}
+
+func TestFileSource_RejectsMismatchedIssuerCertificate(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, 50*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	otherIssuerTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(500),
+		Subject:               pkix.Name{CommonName: "Other CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	otherIssuerDER, err := x509.CreateCertificate(rand.Reader, otherIssuerTmpl, otherIssuerTmpl, &otherKey.PublicKey, otherKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	otherIssuer, err := x509.ParseCertificate(otherIssuerDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+
+	if _, err := s.GetStatus(context.Background(), big.NewInt(42), otherIssuer); err == nil {
+		t.Fatal("expected CRL issuer verification error")
 	}
 }

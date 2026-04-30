@@ -37,9 +37,14 @@ func New(cfg *config.Config, r *responder.Responder, sgn *signer.Signer, src sou
 // Start registers routes and blocks until ctx is cancelled.
 // Performs graceful shutdown with 10-second timeout.
 func (s *Server) Start(ctx context.Context) error {
+	cacheTTL, err := time.ParseDuration(s.cfg.Cache.TTL)
+	if err != nil {
+		return fmt.Errorf("ocsp-responder/server: invalid cache ttl: %w", err)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /", ServeOCSP(s.responder, mustParseDuration(s.cfg.Cache.TTL), s.metrics, s.logger))
-	mux.HandleFunc("GET /{request}", ServeOCSP(s.responder, mustParseDuration(s.cfg.Cache.TTL), s.metrics, s.logger))
+	mux.HandleFunc("POST /", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
+	mux.HandleFunc("GET /{request}", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
 	mux.HandleFunc("GET /health", ServeHealth(s.signer, s.source))
 	mux.Handle("GET /metrics", promhttp.Handler())
 
@@ -103,7 +108,3 @@ func tlsMinVersion(v string) uint16 {
 	return tls.VersionTLS12
 }
 
-func mustParseDuration(s string) time.Duration {
-	d, _ := time.ParseDuration(s)
-	return d
-}

@@ -1,9 +1,11 @@
 package source
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -52,6 +54,14 @@ type HTTPSource struct {
 	cache      sync.Map // serial string → *httpCacheEntry
 	cacheTTL   time.Duration
 	healthy    atomic.Bool
+	observer   HTTPObserver
+}
+
+// HTTPObserver receives optional telemetry from HTTPSource fetches.
+type HTTPObserver interface {
+	RecordSourceLatency(sourceName string, durationSeconds float64)
+	RecordSourceRetry(sourceName string)
+	RecordSourceError(sourceName, class string)
 }
 
 // NewHTTPSource creates an HTTPSource.
@@ -118,8 +128,13 @@ func (s *HTTPSource) Name() string { return "http" }
 // Healthy returns true if the last request succeeded.
 func (s *HTTPSource) Healthy() bool { return s.healthy.Load() }
 
+func (s *HTTPSource) SetObserver(observer HTTPObserver) { s.observer = observer }
+
 // GetStatus returns the revocation status of the certificate with the given serial.
-func (s *HTTPSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+func (s *HTTPSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	_ = issuer
 
 	key := serial.String()
@@ -137,9 +152,16 @@ func (s *HTTPSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*Cert
 	path := strings.ReplaceAll(s.mapping.PathTemplate, "{serial}", strings.ToUpper(serial.Text(16)))
 	url := s.baseURL + path
 
-	cs, err := s.fetchWithRetry(url)
+	start := time.Now()
+	cs, err := s.fetchWithRetry(ctx, url)
+	if s.observer != nil {
+		s.observer.RecordSourceLatency(s.Name(), time.Since(start).Seconds())
+	}
 	if err != nil {
 		s.healthy.Store(false)
+		if s.observer != nil {
+			s.observer.RecordSourceError(s.Name(), classifyHTTPSourceError(err))
+		}
 		return nil, err
 	}
 
@@ -153,17 +175,29 @@ func (s *HTTPSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*Cert
 	return cs, nil
 }
 
-func (s *HTTPSource) fetchWithRetry(url string) (*CertStatus, error) {
+func (s *HTTPSource) fetchWithRetry(ctx context.Context, url string) (*CertStatus, error) {
 	var lastErr error
 	backoff := s.retryCfg.backoff
 
 	for attempt := 0; attempt < s.retryCfg.maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 			backoff *= 2
+			if s.observer != nil {
+				s.observer.RecordSourceRetry(s.Name())
+			}
 		}
 
-		cs, retry, err := s.fetchOnce(url)
+		cs, retry, err := s.fetchOnce(ctx, url)
 		if err == nil {
 			return cs, nil
 		}
@@ -177,8 +211,12 @@ func (s *HTTPSource) fetchWithRetry(url string) (*CertStatus, error) {
 
 // fetchOnce performs a single HTTP GET.
 // Returns (result, shouldRetry, error).
-func (s *HTTPSource) fetchOnce(url string) (*CertStatus, bool, error) {
-	resp, err := s.httpClient.Get(url) //nolint:noctx
+func (s *HTTPSource) fetchOnce(ctx context.Context, url string) (*CertStatus, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("ocsp-responder/source: creating request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, true, fmt.Errorf("ocsp-responder/source: http get: %w", err)
 	}
@@ -214,6 +252,19 @@ func (s *HTTPSource) fetchOnce(url string) (*CertStatus, bool, error) {
 	default:
 		return nil, true, fmt.Errorf("ocsp-responder/source: unexpected status code %d", resp.StatusCode)
 	}
+}
+
+func classifyHTTPSourceError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "transport_or_upstream"
 }
 
 func contains(list []string, val string) bool {

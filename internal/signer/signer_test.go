@@ -160,6 +160,36 @@ func TestSigner_RejectsWrongEKU(t *testing.T) {
 	}
 }
 
+func TestSigner_RejectsSignerNotSignedByIssuer(t *testing.T) {
+	otherIssuerKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	otherIssuerTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(77),
+		Subject:               pkix.Name{CommonName: "Other Issuer"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	otherIssuerDER, err := x509.CreateCertificate(rand.Reader, otherIssuerTmpl, otherIssuerTmpl, &otherIssuerKey.PublicKey, otherIssuerKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+
+	dir := t.TempDir()
+	otherIssuerPath := filepath.Join(dir, "other-issuer.crt")
+	if err := os.WriteFile(otherIssuerPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: otherIssuerDER}), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := NewSigner(ocspCertPath, ocspKeyPath, otherIssuerPath, time.Hour); err == nil {
+		t.Fatalf("expected signer trust validation error")
+	}
+}
+
 func TestSigner_CreateResponse_Good(t *testing.T) {
 	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour)
 	if err != nil {

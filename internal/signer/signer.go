@@ -65,12 +65,31 @@ func NewSigner(certFile, keyFile, issuerCertFile string, validity time.Duration)
 	if err := verifyKeyMatches(cert, key); err != nil {
 		return nil, err
 	}
+	if err := verifySignerTrust(cert, issuer); err != nil {
+		return nil, err
+	}
 
 	if time.Until(cert.NotAfter) < 30*24*time.Hour {
 		slog.Warn("OCSP signer certificate expires soon", "not_after", cert.NotAfter)
 	}
 
 	return &Signer{cert: cert, key: key, issuerCert: issuer, validity: validity}, nil
+}
+
+func verifySignerTrust(cert, issuer *x509.Certificate) error {
+	if cert == nil || issuer == nil {
+		return fmt.Errorf("ocsp-responder/signer: signer and issuer certificates are required")
+	}
+	if !issuer.IsCA {
+		return fmt.Errorf("ocsp-responder/signer: issuer certificate is not a CA")
+	}
+	if issuer.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return fmt.Errorf("ocsp-responder/signer: issuer certificate cannot sign certificates")
+	}
+	if cert.CheckSignatureFrom(issuer) != nil {
+		return fmt.Errorf("ocsp-responder/signer: signer certificate is not signed by issuer")
+	}
+	return nil
 }
 
 func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error) {

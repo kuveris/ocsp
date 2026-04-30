@@ -1,6 +1,8 @@
 package source
 
 import (
+	"bytes"
+	"context"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -22,6 +24,7 @@ import (
 type FileSource struct {
 	crlPath        string
 	reloadInterval time.Duration
+	issuerCert     *x509.Certificate
 	isURL          bool
 
 	mu      sync.RWMutex
@@ -35,9 +38,12 @@ type FileSource struct {
 // NewFileSource creates a FileSource.
 // crlPath: path to the CRL file (PEM or DER auto-detected) or an HTTP(S) URL
 // reloadInterval: how often to check for file changes / re-download the URL
-func NewFileSource(crlPath string, reloadInterval time.Duration) (*FileSource, error) {
+func NewFileSource(crlPath string, reloadInterval time.Duration, issuerCert *x509.Certificate) (*FileSource, error) {
+	if issuerCert == nil {
+		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate is required")
+	}
 	isURL := strings.HasPrefix(crlPath, "http://") || strings.HasPrefix(crlPath, "https://")
-	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, isURL: isURL}
+	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, issuerCert: issuerCert, isURL: isURL}
 	if err := s.loadCRL(); err != nil {
 		return nil, err
 	}
@@ -49,10 +55,18 @@ func (s *FileSource) Name() string { return "file" }
 
 func (s *FileSource) Healthy() bool { return s.loaded.Load() }
 
-func (s *FileSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
-	_ = issuer
+func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !s.loaded.Load() {
 		return nil, ErrSourceUnhealthy
+	}
+	if issuer == nil {
+		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate required")
+	}
+	if !bytes.Equal(issuer.RawSubject, s.issuerCert.RawSubject) {
+		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate mismatch")
 	}
 
 	s.mu.RLock()
@@ -171,6 +185,9 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("ocsp-responder/source: %w", ErrInvalidCRL)
 	}
+	if err := verifyCRLForIssuer(rl, s.issuerCert); err != nil {
+		return err
+	}
 
 	revoked := make(map[string]pkix.RevokedCertificate, len(rl.RevokedCertificateEntries))
 	for _, rc := range rl.RevokedCertificateEntries {
@@ -186,5 +203,15 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	s.mu.Unlock()
 
 	s.loaded.Store(true)
+	return nil
+}
+
+func verifyCRLForIssuer(rl *x509.RevocationList, issuer *x509.Certificate) error {
+	if !bytes.Equal(rl.RawIssuer, issuer.RawSubject) {
+		return fmt.Errorf("ocsp-responder/source: CRL issuer mismatch")
+	}
+	if err := rl.CheckSignatureFrom(issuer); err != nil {
+		return fmt.Errorf("ocsp-responder/source: CRL signature verification failed: %w", err)
+	}
 	return nil
 }

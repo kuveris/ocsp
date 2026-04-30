@@ -10,11 +10,14 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,7 +153,7 @@ func startServer(t *testing.T, tmpDir, listenAddr string, cacheEnabled bool) (ca
 		},
 	}
 
-	fileSrc, err := source.NewFileSource(cfg.Source.File.CRLPath, time.Minute)
+	fileSrc, err := source.NewFileSource(cfg.Source.File.CRLPath, time.Minute, issuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
@@ -221,6 +224,28 @@ func postOCSP(t *testing.T, addr string, reqDER []byte) *xocsp.Response {
 	return parsed
 }
 
+func getOCSP(t *testing.T, addr string, reqDER []byte) *xocsp.Response {
+	t.Helper()
+	encoded := base64.RawURLEncoding.EncodeToString(reqDER)
+	resp, err := http.Get("http://" + addr + "/" + encoded)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	parsed, err := xocsp.ParseResponse(buf.Bytes(), nil)
+	if err != nil {
+		t.Fatalf("ParseResponse: %v", err)
+	}
+	return parsed
+}
+
 func TestOCSPIntegration_FileSource(t *testing.T) {
 	tmpDir := t.TempDir()
 	addr := "127.0.0.1:18080"
@@ -260,4 +285,311 @@ func TestOCSPIntegration_CacheDisabled(t *testing.T) {
 	postOCSP(t, addr, reqDER)
 	postOCSP(t, addr, reqDER)
 	// With cache disabled both requests go through to the source without error.
+}
+
+func TestOCSPIntegration_HTTPSourceDegradedBehavior(t *testing.T) {
+	tmpDir := t.TempDir()
+	addr := "127.0.0.1:18082"
+
+	var failUpstream atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failUpstream.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"active"}`))
+	}))
+	defer upstream.Close()
+
+	issuerCert, _, _, _, _ := setupPKI(t, tmpDir, nil)
+	cfg := &config.Config{
+		Server: config.ServerConfig{ListenAddr: addr},
+		Signer: config.SignerConfig{
+			CertFile:         filepath.Join(tmpDir, "ocsp.crt"),
+			KeyFile:          filepath.Join(tmpDir, "ocsp.key"),
+			IssuerCertFile:   filepath.Join(tmpDir, "issuer.crt"),
+			ResponseValidity: "1h",
+		},
+		Source: config.SourceConfig{
+			Type: "http",
+			HTTP: config.HTTPSourceConfig{
+				BaseURL:      upstream.URL,
+				Timeout:      "1s",
+				RetryMax:     1,
+				RetryBackoff: "10ms",
+			},
+		},
+		Cache: config.CacheConfig{
+			Enabled:    false,
+			TTL:        "1h",
+			MaxEntries: 100,
+		},
+	}
+
+	httpSrc, err := source.NewHTTPSource(
+		cfg.Source.HTTP.BaseURL,
+		"",
+		time.Second,
+		source.ResponseMapping{},
+		cfg.Source.HTTP.RetryMax,
+		10*time.Millisecond,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	validity, err := time.ParseDuration(cfg.Signer.ResponseValidity)
+	if err != nil {
+		t.Fatalf("ParseDuration signer validity: %v", err)
+	}
+	sgn, err := signer.NewSigner(cfg.Signer.CertFile, cfg.Signer.KeyFile, cfg.Signer.IssuerCertFile, validity)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	cacheTTL, err := time.ParseDuration(cfg.Cache.TTL)
+	if err != nil {
+		t.Fatalf("ParseDuration cache ttl: %v", err)
+	}
+	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	defer cancelFn()
+	go func() {
+		if err := srv.Start(ctx); err != nil {
+			t.Logf("server stopped: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, err := http.Get("http://" + addr + "/health")
+		if err == nil {
+			r.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	healthyResp := postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(999)))
+	if healthyResp.Status != xocsp.Good {
+		t.Fatalf("expected good while upstream healthy, got %d", healthyResp.Status)
+	}
+
+	healthOK, err := http.Get("http://" + addr + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	healthOK.Body.Close()
+	if healthOK.StatusCode != http.StatusOK {
+		t.Fatalf("expected /health 200 while upstream healthy, got %d", healthOK.StatusCode)
+	}
+
+	failUpstream.Store(true)
+
+	degradedResp := postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(1000)))
+	if degradedResp.Status != xocsp.Unknown {
+		t.Fatalf("expected unknown when upstream degraded, got %d", degradedResp.Status)
+	}
+
+	healthDegraded, err := http.Get("http://" + addr + "/health")
+	if err != nil {
+		t.Fatalf("GET /health degraded: %v", err)
+	}
+	healthDegraded.Body.Close()
+	if healthDegraded.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected /health 503 when upstream degraded, got %d", healthDegraded.StatusCode)
+	}
+}
+
+func TestOCSPIntegration_HTTPSourceDegradedBehavior_GETEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	addr := "127.0.0.1:18083"
+
+	var failUpstream atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failUpstream.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"active"}`))
+	}))
+	defer upstream.Close()
+
+	issuerCert, _, _, _, _ := setupPKI(t, tmpDir, nil)
+	cfg := &config.Config{
+		Server: config.ServerConfig{ListenAddr: addr},
+		Signer: config.SignerConfig{
+			CertFile:         filepath.Join(tmpDir, "ocsp.crt"),
+			KeyFile:          filepath.Join(tmpDir, "ocsp.key"),
+			IssuerCertFile:   filepath.Join(tmpDir, "issuer.crt"),
+			ResponseValidity: "1h",
+		},
+		Source: config.SourceConfig{
+			Type: "http",
+			HTTP: config.HTTPSourceConfig{
+				BaseURL:      upstream.URL,
+				Timeout:      "1s",
+				RetryMax:     1,
+				RetryBackoff: "10ms",
+			},
+		},
+		Cache: config.CacheConfig{
+			Enabled:    false,
+			TTL:        "1h",
+			MaxEntries: 100,
+		},
+	}
+
+	httpSrc, err := source.NewHTTPSource(cfg.Source.HTTP.BaseURL, "", time.Second, source.ResponseMapping{}, cfg.Source.HTTP.RetryMax, 10*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	validity, err := time.ParseDuration(cfg.Signer.ResponseValidity)
+	if err != nil {
+		t.Fatalf("ParseDuration signer validity: %v", err)
+	}
+	sgn, err := signer.NewSigner(cfg.Signer.CertFile, cfg.Signer.KeyFile, cfg.Signer.IssuerCertFile, validity)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	cacheTTL, err := time.ParseDuration(cfg.Cache.TTL)
+	if err != nil {
+		t.Fatalf("ParseDuration cache ttl: %v", err)
+	}
+	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	defer cancelFn()
+	go func() {
+		if err := srv.Start(ctx); err != nil {
+			t.Logf("server stopped: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, err := http.Get("http://" + addr + "/health")
+		if err == nil {
+			r.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	healthyResp := getOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(2001)))
+	if healthyResp.Status != xocsp.Good {
+		t.Fatalf("expected good while upstream healthy, got %d", healthyResp.Status)
+	}
+
+	failUpstream.Store(true)
+
+	degradedResp := getOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(2002)))
+	if degradedResp.Status != xocsp.Unknown {
+		t.Fatalf("expected unknown when upstream degraded, got %d", degradedResp.Status)
+	}
+}
+
+func TestOCSPIntegration_HTTPSourceIntermittentFailures(t *testing.T) {
+	tmpDir := t.TempDir()
+	addr := "127.0.0.1:18084"
+
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n%2 == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"active"}`))
+	}))
+	defer upstream.Close()
+
+	issuerCert, _, _, _, _ := setupPKI(t, tmpDir, nil)
+	cfg := &config.Config{
+		Server: config.ServerConfig{ListenAddr: addr},
+		Signer: config.SignerConfig{
+			CertFile:         filepath.Join(tmpDir, "ocsp.crt"),
+			KeyFile:          filepath.Join(tmpDir, "ocsp.key"),
+			IssuerCertFile:   filepath.Join(tmpDir, "issuer.crt"),
+			ResponseValidity: "1h",
+		},
+		Source: config.SourceConfig{
+			Type: "http",
+			HTTP: config.HTTPSourceConfig{
+				BaseURL:      upstream.URL,
+				Timeout:      "1s",
+				RetryMax:     1,
+				RetryBackoff: "10ms",
+			},
+		},
+		Cache: config.CacheConfig{
+			Enabled:    false,
+			TTL:        "1h",
+			MaxEntries: 100,
+		},
+	}
+
+	httpSrc, err := source.NewHTTPSource(cfg.Source.HTTP.BaseURL, "", time.Second, source.ResponseMapping{}, cfg.Source.HTTP.RetryMax, 10*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	validity, err := time.ParseDuration(cfg.Signer.ResponseValidity)
+	if err != nil {
+		t.Fatalf("ParseDuration signer validity: %v", err)
+	}
+	sgn, err := signer.NewSigner(cfg.Signer.CertFile, cfg.Signer.KeyFile, cfg.Signer.IssuerCertFile, validity)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	cacheTTL, err := time.ParseDuration(cfg.Cache.TTL)
+	if err != nil {
+		t.Fatalf("ParseDuration cache ttl: %v", err)
+	}
+	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+
+	ctx, cancelFn := context.WithCancel(context.Background())
+	defer cancelFn()
+	go func() {
+		if err := srv.Start(ctx); err != nil {
+			t.Logf("server stopped: %v", err)
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, err := http.Get("http://" + addr + "/health")
+		if err == nil {
+			r.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	statuses := []int{
+		postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(3001))).Status,
+		postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(3002))).Status,
+		postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(3003))).Status,
+		postOCSP(t, addr, makeOCSPRequest(t, issuerCert, big.NewInt(3004))).Status,
+	}
+
+	for i, st := range statuses {
+		if st != xocsp.Good && st != xocsp.Unknown {
+			t.Fatalf("unexpected status at idx %d: %d", i, st)
+		}
+	}
 }

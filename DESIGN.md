@@ -1,7 +1,7 @@
 # ocsp-responder — Design Document
 
-**Version:** 0.1.0-draft  
-**Status:** Pre-implementation  
+**Version:** 0.1.0  
+**Status:** Implemented (maintained as architecture reference)  
 **Language:** Go 1.22+  
 **Repo:** `github.com/hartmann-it/ocsp-responder`  
 
@@ -70,7 +70,7 @@ stecken können:
 | `http` | Fragt eine CA-REST-API ab | step-ca API, EJBCA, jede CA mit HTTP-API |
 | `static` | Hardcodierte Antwort | Tests, Entwicklung |
 
-Phase 1: `file` + `static`. Phase 2: `http`.
+`file`, `http`, and `static` sources are implemented.
 
 ---
 
@@ -120,6 +120,7 @@ ocsp-responder/
 package source
 
 import (
+    "context"
     "crypto/x509"
     "math/big"
     "time"
@@ -152,7 +153,7 @@ type Source interface {
     // GetStatus returns the revocation status of the certificate with the given serial.
     // The issuer certificate is provided for backends that need to verify the chain.
     // Must never return StatusGood as a fallback on errors — return error instead.
-    GetStatus(serial *big.Int, issuer *x509.Certificate) (*CertStatus, error)
+    GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error)
 
     // Name returns a human-readable identifier for this source (used in logs and /health).
     Name() string

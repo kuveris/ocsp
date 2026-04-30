@@ -1,7 +1,9 @@
 package responder
 
 import (
+	"encoding/asn1"
 	"context"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
@@ -14,6 +16,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/crypto/ocsp"
 )
+
+type subjectPublicKeyInfo struct {
+	Algorithm        asn1.RawValue
+	SubjectPublicKey asn1.BitString
+}
 
 // MetricsRecorder is the optional interface for recording request metrics.
 // Implementations must be safe for concurrent use.
@@ -60,10 +67,16 @@ func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntr
 
 // Handle processes a raw DER-encoded OCSP request.
 func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, error) {
-	_ = ctx
 	start := time.Now()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("ocsp-responder/responder: %w", err)
+	}
+
 	req, err := ocsp.ParseRequest(requestDER)
 	if err != nil {
+		return nil, fmt.Errorf("ocsp-responder/responder: %w", err)
+	}
+	if err := validateIssuerBinding(req, r.signer.IssuerCert()); err != nil {
 		return nil, fmt.Errorf("ocsp-responder/responder: %w", err)
 	}
 	serial := req.SerialNumber
@@ -83,7 +96,7 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 
 	status := source.StatusUnknown
 	var revInfo *source.RevocationInfo
-	cs, srcErr := r.source.GetStatus(serial, r.signer.IssuerCert())
+	cs, srcErr := r.source.GetStatus(ctx, serial, r.signer.IssuerCert())
 	if srcErr == nil && cs != nil {
 		status = cs.Status
 		revInfo = cs.RevocationInfo
@@ -109,6 +122,43 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 	r.cache.set(key, der)
 	r.logger.Info("ocsp", "serial", serialHex(serial), "status", statusString(status), "source", r.source.Name(), "cache_hit", false, "duration_ms", time.Since(start).Milliseconds())
 	return der, nil
+}
+
+func validateIssuerBinding(req *ocsp.Request, issuer *x509.Certificate) error {
+	if req == nil || issuer == nil {
+		return fmt.Errorf("invalid issuer binding context")
+	}
+	h := req.HashAlgorithm
+	if !h.Available() {
+		return fmt.Errorf("unsupported issuer hash algorithm")
+	}
+
+	nameHasher := h.New()
+	nameHasher.Write(issuer.RawSubject)
+	expectedNameHash := nameHasher.Sum(nil)
+	if !equalBytes(req.IssuerNameHash, expectedNameHash) {
+		return fmt.Errorf("issuer name hash mismatch")
+	}
+
+	var spki subjectPublicKeyInfo
+	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &spki); err != nil {
+		return fmt.Errorf("unable to parse issuer subject public key info")
+	}
+	spkiHasher := h.New()
+	spkiHasher.Write(spki.SubjectPublicKey.Bytes)
+	expectedSPKIHash := spkiHasher.Sum(nil)
+	if !equalBytes(req.IssuerKeyHash, expectedSPKIHash) {
+		return fmt.Errorf("issuer key hash mismatch")
+	}
+
+	return nil
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
 func serialHex(n *big.Int) string {

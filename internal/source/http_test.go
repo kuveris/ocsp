@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,6 +20,29 @@ import (
 	"testing"
 	"time"
 )
+
+type testHTTPObserver struct {
+	retries int
+	errors  int
+	latency int
+}
+
+func (o *testHTTPObserver) RecordSourceLatency(sourceName string, durationSeconds float64) {
+	_ = sourceName
+	_ = durationSeconds
+	o.latency++
+}
+
+func (o *testHTTPObserver) RecordSourceRetry(sourceName string) {
+	_ = sourceName
+	o.retries++
+}
+
+func (o *testHTTPObserver) RecordSourceError(sourceName, class string) {
+	_ = sourceName
+	_ = class
+	o.errors++
+}
 
 func jsonResponse(w http.ResponseWriter, status int, body map[string]interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -42,7 +66,7 @@ func TestHTTPSource_Good(t *testing.T) {
 	defer srv.Close()
 
 	s := newTestHTTPSource(t, srv.URL)
-	cs, err := s.GetStatus(big.NewInt(123), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(123), nil)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -61,7 +85,7 @@ func TestHTTPSource_Revoked(t *testing.T) {
 	defer srv.Close()
 
 	s := newTestHTTPSource(t, srv.URL)
-	cs, err := s.GetStatus(big.NewInt(42), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(42), nil)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -80,7 +104,7 @@ func TestHTTPSource_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	s := newTestHTTPSource(t, srv.URL)
-	cs, err := s.GetStatus(big.NewInt(999), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(999), nil)
 	if err != nil {
 		t.Fatalf("expected no error on 404, got %v", err)
 	}
@@ -96,7 +120,7 @@ func TestHTTPSource_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	s, _ := NewHTTPSource(srv.URL, "", 5*time.Second, ResponseMapping{}, 2, time.Millisecond, 0)
-	_, err := s.GetStatus(big.NewInt(1), nil)
+	_, err := s.GetStatus(context.Background(), big.NewInt(1), nil)
 	if err == nil {
 		t.Fatal("expected error after all retries fail")
 	}
@@ -113,7 +137,7 @@ func TestHTTPSource_Timeout(t *testing.T) {
 	defer srv.Close()
 
 	s, _ := NewHTTPSource(srv.URL, "", 50*time.Millisecond, ResponseMapping{}, 1, time.Millisecond, 0)
-	_, err := s.GetStatus(big.NewInt(1), nil)
+	_, err := s.GetStatus(context.Background(), big.NewInt(1), nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -132,7 +156,7 @@ func TestHTTPSource_RetrySuccess(t *testing.T) {
 	defer srv.Close()
 
 	s, _ := NewHTTPSource(srv.URL, "", 5*time.Second, ResponseMapping{}, 3, time.Millisecond, 0)
-	cs, err := s.GetStatus(big.NewInt(7), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(7), nil)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -157,7 +181,7 @@ func TestHTTPSource_CustomMapping(t *testing.T) {
 		RevokedValues: []string{"suspended"},
 	}
 	s, _ := NewHTTPSource(srv.URL, "", 5*time.Second, mapping, 1, time.Millisecond, 0)
-	cs, err := s.GetStatus(big.NewInt(55), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(55), nil)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
@@ -178,7 +202,7 @@ func TestHTTPSource_CacheHit(t *testing.T) {
 	serial := big.NewInt(99)
 
 	for i := 0; i < 3; i++ {
-		if _, err := s.GetStatus(serial, nil); err != nil {
+		if _, err := s.GetStatus(context.Background(), serial, nil); err != nil {
 			t.Fatalf("GetStatus attempt %d: %v", i+1, err)
 		}
 	}
@@ -235,7 +259,7 @@ func TestHTTPSource_TLSPinning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPSource with root cert: %v", err)
 	}
-	cs, err := s.GetStatus(big.NewInt(1), nil)
+	cs, err := s.GetStatus(context.Background(), big.NewInt(1), nil)
 	if err != nil {
 		t.Fatalf("GetStatus with pinned cert: %v", err)
 	}
@@ -248,8 +272,51 @@ func TestHTTPSource_TLSPinning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPSource without root cert: %v", err)
 	}
-	_, err = s2.GetStatus(big.NewInt(1), nil)
+	_, err = s2.GetStatus(context.Background(), big.NewInt(1), nil)
 	if err == nil {
 		t.Fatal("expected TLS error without pinned cert")
+	}
+}
+
+func TestHTTPSource_ContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "active"})
+	}))
+	defer srv.Close()
+
+	s := newTestHTTPSource(t, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := s.GetStatus(ctx, big.NewInt(123), nil); err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+}
+
+func TestHTTPSource_ObserverTracksRetryAndError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", 5*time.Second, ResponseMapping{}, 2, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	observer := &testHTTPObserver{}
+	s.SetObserver(observer)
+
+	if _, err := s.GetStatus(context.Background(), big.NewInt(9), nil); err == nil {
+		t.Fatal("expected source error")
+	}
+	if observer.retries == 0 {
+		t.Fatal("expected retry metric to be recorded")
+	}
+	if observer.errors == 0 {
+		t.Fatal("expected error metric to be recorded")
+	}
+	if observer.latency == 0 {
+		t.Fatal("expected latency metric to be recorded")
 	}
 }

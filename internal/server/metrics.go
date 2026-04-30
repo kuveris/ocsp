@@ -14,6 +14,9 @@ type Metrics struct {
 	CacheMisses     prometheus.Counter
 	SignerDaysLeft  prometheus.Gauge
 	SourceRequests  *prometheus.CounterVec
+	SourceLatency   *prometheus.HistogramVec
+	SourceRetries   *prometheus.CounterVec
+	SourceErrors    *prometheus.CounterVec
 }
 
 // Ensure Metrics implements the MetricsRecorder interface.
@@ -28,6 +31,18 @@ func (m *Metrics) RecordRequest(method, status string, durationSeconds float64) 
 // RecordSourceRequest records a request to the certificate status source.
 func (m *Metrics) RecordSourceRequest(sourceName, result string) {
 	m.SourceRequests.WithLabelValues(sourceName, result).Inc()
+}
+
+func (m *Metrics) RecordSourceLatency(sourceName string, durationSeconds float64) {
+	m.SourceLatency.WithLabelValues(sourceName).Observe(durationSeconds)
+}
+
+func (m *Metrics) RecordSourceRetry(sourceName string) {
+	m.SourceRetries.WithLabelValues(sourceName).Inc()
+}
+
+func (m *Metrics) RecordSourceError(sourceName, class string) {
+	m.SourceErrors.WithLabelValues(sourceName, class).Inc()
 }
 
 // RecordCacheHit records a cache hit.
@@ -78,6 +93,19 @@ func NewMetrics() *Metrics {
 			Name: "ocsp_source_requests_total",
 			Help: "Total number of requests made to the certificate status source.",
 		}, []string{"source", "result"}),
+		SourceLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "ocsp_source_request_duration_seconds",
+			Help:    "Latency of certificate status source requests in seconds.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"source"}),
+		SourceRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ocsp_source_retries_total",
+			Help: "Total number of retries performed for source requests.",
+		}, []string{"source"}),
+		SourceErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ocsp_source_errors_total",
+			Help: "Total number of source request errors by class.",
+		}, []string{"source", "class"}),
 	}
 
 	prometheus.MustRegister(
@@ -88,6 +116,9 @@ func NewMetrics() *Metrics {
 		m.CacheMisses,
 		m.SignerDaysLeft,
 		m.SourceRequests,
+		m.SourceLatency,
+		m.SourceRetries,
+		m.SourceErrors,
 	)
 
 	return m

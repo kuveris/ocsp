@@ -105,9 +105,9 @@ type countingSource struct {
 	count int
 }
 
-func (c *countingSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*source.CertStatus, error) {
+func (c *countingSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*source.CertStatus, error) {
 	c.count++
-	return c.inner.GetStatus(serial, issuer)
+	return c.inner.GetStatus(ctx, serial, issuer)
 }
 func (c *countingSource) Name() string  { return c.inner.Name() }
 func (c *countingSource) Healthy() bool { return c.inner.Healthy() }
@@ -201,7 +201,8 @@ func TestHandle_CacheHit(t *testing.T) {
 
 type errSource struct{}
 
-func (e *errSource) GetStatus(serial *big.Int, issuer *x509.Certificate) (*source.CertStatus, error) {
+func (e *errSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*source.CertStatus, error) {
+	_ = ctx
 	return nil, fmt.Errorf("boom")
 }
 func (e *errSource) Name() string  { return "err" }
@@ -230,5 +231,31 @@ func TestHandle_SignatureValid(t *testing.T) {
 	}
 	if _, err := xocsp.ParseResponseForCert(der, nil, sgn.IssuerCert()); err != nil {
 		t.Fatalf("verify: %v", err)
+	}
+}
+
+func TestHandle_RejectsMismatchedIssuerBinding(t *testing.T) {
+	sgn := newTestSigner(t)
+	src, _ := source.NewStaticSource("good")
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil, nil, nil)
+
+	otherSigner := newTestSigner(t)
+	request := makeRequest(t, otherSigner.IssuerCert(), big.NewInt(123))
+
+	if _, err := r.Handle(context.Background(), request); err == nil {
+		t.Fatalf("expected issuer-binding validation error")
+	}
+}
+
+func TestHandle_ContextCanceled(t *testing.T) {
+	sgn := newTestSigner(t)
+	src, _ := source.NewStaticSource("good")
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := r.Handle(ctx, makeRequest(t, sgn.IssuerCert(), big.NewInt(1))); err == nil {
+		t.Fatalf("expected context cancellation error")
 	}
 }

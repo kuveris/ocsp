@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/prometheus/client_golang/prometheus"
 	xocsp "golang.org/x/crypto/ocsp"
 )
 
@@ -156,12 +157,18 @@ func ExpiryStatusString(es ExpiryStatus) string {
 }
 
 // StartExpiryMonitor starts a goroutine that logs signer certificate expiry status every 24 hours.
-// It stops when ctx is cancelled.
-func (s *Signer) StartExpiryMonitor(ctx context.Context, logger *slog.Logger) {
+// It stops when ctx is cancelled. daysGauge is optional — if non-nil it is updated on each tick
+// and immediately on start.
+func (s *Signer) StartExpiryMonitor(ctx context.Context, logger *slog.Logger, daysGauge prometheus.Gauge) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	go func() {
+		// Set gauge immediately on start.
+		if daysGauge != nil {
+			daysGauge.Set(float64(s.DaysUntilExpiry()))
+		}
+
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -170,6 +177,9 @@ func (s *Signer) StartExpiryMonitor(ctx context.Context, logger *slog.Logger) {
 				return
 			case <-ticker.C:
 				days := s.DaysUntilExpiry()
+				if daysGauge != nil {
+					daysGauge.Set(float64(days))
+				}
 				switch s.GetExpiryStatus() {
 				case ExpiryWarning:
 					logger.Warn("OCSP signer certificate expires soon", "days", days)

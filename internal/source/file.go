@@ -5,19 +5,24 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // FileSource reads a CRL file (PEM or DER format) and uses it to determine certificate status.
-// It automatically reloads the CRL when the file is modified.
+// crl_path may be a local file path or an HTTP(S) URL.
+// It automatically reloads the CRL when the file is modified (file) or on each reload interval (URL).
 // It is safe for concurrent use.
 type FileSource struct {
 	crlPath        string
 	reloadInterval time.Duration
+	isURL          bool
 
 	mu      sync.RWMutex
 	revoked map[string]pkix.RevokedCertificate
@@ -28,11 +33,12 @@ type FileSource struct {
 }
 
 // NewFileSource creates a FileSource.
-// crlPath: path to the CRL file (PEM or DER auto-detected)
-// reloadInterval: how often to check for file changes
+// crlPath: path to the CRL file (PEM or DER auto-detected) or an HTTP(S) URL
+// reloadInterval: how often to check for file changes / re-download the URL
 func NewFileSource(crlPath string, reloadInterval time.Duration) (*FileSource, error) {
-	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval}
-	if err := s.loadFromDisk(); err != nil {
+	isURL := strings.HasPrefix(crlPath, "http://") || strings.HasPrefix(crlPath, "https://")
+	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, isURL: isURL}
+	if err := s.loadCRL(); err != nil {
 		return nil, err
 	}
 	go s.reloadLoop()
@@ -81,6 +87,12 @@ func (s *FileSource) reloadLoop() {
 	t := time.NewTicker(s.reloadInterval)
 	defer t.Stop()
 	for range t.C {
+		if s.isURL {
+			if err := s.loadFromURL(); err != nil {
+				s.loaded.Store(false)
+			}
+			continue
+		}
 		info, err := os.Stat(s.crlPath)
 		if err != nil {
 			s.loaded.Store(false)
@@ -99,6 +111,35 @@ func (s *FileSource) reloadLoop() {
 	}
 }
 
+// loadCRL dispatches to loadFromURL or loadFromDisk based on the path type.
+func (s *FileSource) loadCRL() error {
+	if s.isURL {
+		return s.loadFromURL()
+	}
+	return s.loadFromDisk()
+}
+
+// loadFromURL downloads the CRL from an HTTP(S) URL and parses it.
+func (s *FileSource) loadFromURL() error {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(s.crlPath)
+	if err != nil {
+		return fmt.Errorf("ocsp-responder/source: downloading CRL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ocsp-responder/source: downloading CRL: HTTP %d", resp.StatusCode)
+	}
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("ocsp-responder/source: reading CRL body: %w", err)
+	}
+
+	return s.parseCRLBytes(b)
+}
+
 func (s *FileSource) loadFromDisk() error {
 	info, err := os.Stat(s.crlPath)
 	if err != nil {
@@ -109,6 +150,18 @@ func (s *FileSource) loadFromDisk() error {
 		return fmt.Errorf("ocsp-responder/source: %w", err)
 	}
 
+	if err := s.parseCRLBytes(b); err != nil {
+		return err
+	}
+
+	s.lastModMu.Lock()
+	s.lastMod = info.ModTime()
+	s.lastModMu.Unlock()
+
+	return nil
+}
+
+func (s *FileSource) parseCRLBytes(b []byte) error {
 	der := b
 	if blk, _ := pem.Decode(b); blk != nil {
 		der = blk.Bytes
@@ -131,10 +184,6 @@ func (s *FileSource) loadFromDisk() error {
 	s.mu.Lock()
 	s.revoked = revoked
 	s.mu.Unlock()
-
-	s.lastModMu.Lock()
-	s.lastMod = info.ModTime()
-	s.lastModMu.Unlock()
 
 	s.loaded.Store(true)
 	return nil

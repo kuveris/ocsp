@@ -39,7 +39,7 @@ spezifische CA-Software gebunden.
 │                                                  │
 │  ┌──────────────┐    ┌────────────────────────┐  │
 │  │ HTTP Handler │───▶│  Responder Core        │  │
-│  └──────────────┘    │  (cfssl/ocsp)          │  │
+│  └──────────────┘    │  (golang.org/x/crypto) │  │
 │                      └──────────┬─────────────┘  │
 │                                 │                 │
 │                      ┌──────────▼─────────────┐  │
@@ -95,7 +95,7 @@ ocsp-responder/
 │   │   ├── signer.go                # OCSP Signing Key + Cert laden
 │   │   └── signer_test.go
 │   ├── responder/
-│   │   ├── responder.go             # cfssl/ocsp wrapper + in-memory cache
+│   │   ├── responder.go             # OCSP responder core + in-memory cache
 │   │   └── responder_test.go
 │   └── server/
 │       ├── server.go                # HTTP Server + graceful shutdown
@@ -240,13 +240,15 @@ GET /health
 
 | Library | Zweck |
 |---|---|
-| `github.com/cloudflare/cfssl/ocsp` | OCSP Request/Response parsen, Response bauen, signieren |
+| `golang.org/x/crypto/ocsp` (stdlib) | OCSP Request/Response parsen, Response bauen, signieren |
 | `crypto/x509` (stdlib) | Zertifikat-Handling, CRL-Parsing |
 | `net/http` (stdlib) | HTTP Server |
 | `gopkg.in/yaml.v3` | Config |
 | `golang.org/x/crypto` | Crypto-Primitiven |
 
-`cfssl/ocsp` übernimmt: DER-Parsing, Response-Building, Signing-Logik.
+Note: The implementation uses `golang.org/x/crypto/ocsp` directly instead of cfssl,
+eliminating an external dependency while providing equivalent functionality.
+
 Eigencode beschränkt sich auf Source-Interface, Config, HTTP-Handler, Cache.
 
 ---

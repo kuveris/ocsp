@@ -45,15 +45,16 @@ func main() {
 	// Start expiry monitor with a context that is cancelled on SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	sgn.StartExpiryMonitor(ctx, logger)
 
 	metrics := server.NewMetrics()
 
-	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
-	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, metrics, logger)
+	sgn.StartExpiryMonitor(ctx, logger, metrics.SignerDaysLeft)
 
-	srv := server.New(cfg, resp, sgn, src, logger)
-	if err := srv.Start(); err != nil {
+	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
+	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, metrics, metrics.CacheEntries, logger)
+
+	srv := server.New(cfg, resp, sgn, src, metrics, logger)
+	if err := srv.Start(ctx); err != nil {
 		logger.Error("server error", "err", err)
 		os.Exit(1)
 	}

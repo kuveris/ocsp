@@ -27,6 +27,8 @@ type TLSConfig struct {
 	CertFile   string `yaml:"cert_file"`
 	KeyFile    string `yaml:"key_file"`
 	MinVersion string `yaml:"min_version"` // "1.2" | "1.3", default "1.2"
+	ACMEHost   string `yaml:"acme_host"`   // optional: hostname for ACME certificate
+	ACMECAUrl  string `yaml:"acme_ca_url"` // optional: ACME directory URL (for internal CAs)
 }
 
 type SignerConfig struct {

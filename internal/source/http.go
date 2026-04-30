@@ -202,6 +202,9 @@ func (s *HTTPSource) fetchOnce(url string) (*CertStatus, bool, error) {
 			return &CertStatus{Status: StatusGood}, false, nil
 		}
 		if contains(s.mapping.RevokedValues, strVal) {
+			// The CA API only provides a status value, not a revocation timestamp.
+			// We record the current time as the revocation time since the actual
+			// timestamp is unavailable from the status-only response.
 			return &CertStatus{
 				Status:         StatusRevoked,
 				RevocationInfo: &RevocationInfo{RevokedAt: time.Now(), Reason: 0},

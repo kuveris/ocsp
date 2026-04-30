@@ -117,8 +117,9 @@ func (s *Signer) Valid() bool {
 	return now.After(s.cert.NotBefore) && now.Before(s.cert.NotAfter)
 }
 
-// DaysUntilExpiry returns the number of full days until the signing certificate expires.
+// DaysUntilExpiry returns the number of complete days until the signing certificate expires.
 // Returns a negative number if the certificate is already expired.
+// The value is truncated (floor), so 7 days and 23 hours returns 7.
 func (s *Signer) DaysUntilExpiry() int {
 	return int(time.Until(s.cert.NotAfter).Hours() / 24)
 }

@@ -179,7 +179,7 @@ func TestHTTPSource_CacheHit(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		if _, err := s.GetStatus(serial, nil); err != nil {
-			t.Fatalf("GetStatus attempt %d: %v", i, err)
+			t.Fatalf("GetStatus attempt %d: %v", i+1, err)
 		}
 	}
 	if callCount.Load() != 1 {

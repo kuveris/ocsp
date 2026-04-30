@@ -153,7 +153,7 @@ func startServer(t *testing.T, tmpDir, listenAddr string, cacheEnabled bool) (ca
 		},
 	}
 
-	fileSrc, err := source.NewFileSource(cfg.Source.File.CRLPath, time.Minute)
+	fileSrc, err := source.NewFileSource(cfg.Source.File.CRLPath, time.Minute, issuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}

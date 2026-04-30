@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -29,12 +30,6 @@ func main() {
 
 	logger := buildLogger(cfg.Logging.Level, cfg.Logging.Format)
 
-	src, err := newSource(cfg)
-	if err != nil {
-		logger.Error("failed to create source", "err", err)
-		os.Exit(1)
-	}
-
 	validity, err := time.ParseDuration(cfg.Signer.ResponseValidity)
 	if err != nil {
 		logger.Error("invalid signer response validity", "value", cfg.Signer.ResponseValidity, "err", err)
@@ -43,6 +38,12 @@ func main() {
 	sgn, err := signer.NewSigner(cfg.Signer.CertFile, cfg.Signer.KeyFile, cfg.Signer.IssuerCertFile, validity)
 	if err != nil {
 		logger.Error("failed to create signer", "err", err)
+		os.Exit(1)
+	}
+
+	src, err := newSource(cfg, sgn.IssuerCert())
+	if err != nil {
+		logger.Error("failed to create source", "err", err)
 		os.Exit(1)
 	}
 
@@ -94,14 +95,14 @@ func buildLogger(level, format string) *slog.Logger {
 	return slog.New(handler)
 }
 
-func newSource(cfg *config.Config) (source.Source, error) {
+func newSource(cfg *config.Config, issuerCert *x509.Certificate) (source.Source, error) {
 	switch cfg.Source.Type {
 	case "file":
 		interval, err := time.ParseDuration(cfg.Source.File.ReloadInterval)
 		if err != nil {
 			return nil, fmt.Errorf("ocsp-responder: invalid file reload interval: %w", err)
 		}
-		return source.NewFileSource(cfg.Source.File.CRLPath, interval)
+		return source.NewFileSource(cfg.Source.File.CRLPath, interval, issuerCert)
 	case "static":
 		return source.NewStaticSource(cfg.Source.Static.Status)
 	case "http":

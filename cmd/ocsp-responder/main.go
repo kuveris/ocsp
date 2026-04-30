@@ -40,7 +40,7 @@ func main() {
 	}
 
 	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
-	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, logger)
+	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, logger)
 
 	srv := server.New(cfg, resp, sgn, src, logger)
 	if err := srv.Start(); err != nil {

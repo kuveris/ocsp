@@ -28,7 +28,7 @@ type signer interface {
 	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error)
 }
 
-func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, logger *slog.Logger) *Responder {
+func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, logger *slog.Logger) *Responder {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,6 +39,7 @@ func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntr
 			entries:    make(map[string]*cacheEntry),
 			ttl:        cacheTTL,
 			maxEntries: maxEntries,
+			enabled:    cacheEnabled,
 		},
 		logger: logger,
 	}
@@ -107,6 +108,7 @@ type cache struct {
 	entries    map[string]*cacheEntry
 	ttl        time.Duration
 	maxEntries int
+	enabled    bool
 }
 
 type cacheEntry struct {
@@ -115,6 +117,9 @@ type cacheEntry struct {
 }
 
 func (c *cache) get(key string) ([]byte, bool) {
+	if !c.enabled {
+		return nil, false
+	}
 	c.mu.RLock()
 	e := c.entries[key]
 	c.mu.RUnlock()
@@ -131,7 +136,7 @@ func (c *cache) get(key string) ([]byte, bool) {
 }
 
 func (c *cache) set(key string, data []byte) {
-	if c.maxEntries <= 0 {
+	if !c.enabled || c.maxEntries <= 0 {
 		return
 	}
 	c.mu.Lock()

@@ -1,10 +1,12 @@
 module github.com/hartmann-it/ocsp-responder
 
-go 1.25.0
+go 1.22
+
+toolchain go1.24.13
 
 require (
 	github.com/cloudflare/cfssl v1.6.5
-	golang.org/x/crypto v0.50.0
+	golang.org/x/crypto v0.26.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

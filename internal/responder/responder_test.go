@@ -134,7 +134,7 @@ func parseResp(t *testing.T, issuer *x509.Certificate, der []byte) *xocsp.Respon
 func TestHandle_Good(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("good")
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(99)))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -148,7 +148,7 @@ func TestHandle_Good(t *testing.T) {
 func TestHandle_Revoked(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("revoked")
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(42)))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -162,7 +162,7 @@ func TestHandle_Revoked(t *testing.T) {
 func TestHandle_Unknown(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("unknown")
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(7)))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -176,7 +176,7 @@ func TestHandle_Unknown(t *testing.T) {
 func TestHandle_MalformedInput(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("good")
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	if _, err := r.Handle(context.Background(), []byte("nope")); err == nil {
 		t.Fatalf("expected error")
 	}
@@ -186,7 +186,7 @@ func TestHandle_CacheHit(t *testing.T) {
 	sgn := newTestSigner(t)
 	inner, _ := source.NewStaticSource("good")
 	src := &countingSource{inner: inner}
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	req := makeRequest(t, sgn.IssuerCert(), big.NewInt(99))
 	if _, err := r.Handle(context.Background(), req); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -209,7 +209,7 @@ func (e *errSource) Healthy() bool { return false }
 
 func TestHandle_SourceError(t *testing.T) {
 	sgn := newTestSigner(t)
-	r := NewResponder(&errSource{}, sgn, time.Minute, 100, nil)
+	r := NewResponder(&errSource{}, sgn, time.Minute, 100, true, nil)
 	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(5)))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -223,7 +223,7 @@ func TestHandle_SourceError(t *testing.T) {
 func TestHandle_SignatureValid(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("good")
-	r := NewResponder(src, sgn, time.Minute, 100, nil)
+	r := NewResponder(src, sgn, time.Minute, 100, true, nil)
 	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(123)))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

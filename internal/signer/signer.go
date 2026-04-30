@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	cfocsp "github.com/cloudflare/cfssl/ocsp"
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	xocsp "golang.org/x/crypto/ocsp"
 )
 
 // Signer holds the OCSP delegated signing certificate and private key.
@@ -62,42 +62,37 @@ func NewSigner(certFile, keyFile, issuerCertFile string, validity time.Duration)
 }
 
 func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error) {
-	ocspStatus := "unknown"
+	var ocspStatus int
 	var revokedAt time.Time
 	reason := 0
 
 	switch status {
 	case source.StatusGood:
-		ocspStatus = "good"
+		ocspStatus = xocsp.Good
 	case source.StatusRevoked:
-		ocspStatus = "revoked"
+		ocspStatus = xocsp.Revoked
 		if revInfo != nil {
 			revokedAt = revInfo.RevokedAt
 			reason = revInfo.Reason
 		}
 	case source.StatusUnknown:
-		ocspStatus = "unknown"
+		ocspStatus = xocsp.Unknown
 	default:
 		return nil, fmt.Errorf("ocsp-responder/signer: unsupported status %v", status)
 	}
 
-	cfSigner, err := cfocsp.NewSigner(s.issuerCert, s.cert, s.key, s.validity)
-	if err != nil {
-		return nil, fmt.Errorf("ocsp-responder/signer: %w", err)
+	template := xocsp.Response{
+		Status:           ocspStatus,
+		SerialNumber:     serial,
+		ThisUpdate:       thisUpdate,
+		NextUpdate:       thisUpdate.Add(s.validity),
+		IssuerHash:       crypto.SHA1,
+		Certificate:      s.cert,
+		RevokedAt:        revokedAt,
+		RevocationReason: reason,
 	}
 
-	req := cfocsp.SignRequest{
-		Certificate: s.issuerCert,
-		Status:      ocspStatus,
-		Reason:      reason,
-		RevokedAt:   revokedAt,
-		ThisUpdate:  &thisUpdate,
-	}
-
-	nextUpdate := thisUpdate.Add(s.validity)
-	req.NextUpdate = &nextUpdate
-
-	der, err := cfSigner.Sign(req)
+	der, err := xocsp.CreateResponse(s.issuerCert, s.cert, template, s.key)
 	if err != nil {
 		return nil, fmt.Errorf("ocsp-responder/signer: %w", err)
 	}

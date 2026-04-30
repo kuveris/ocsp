@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,5 +176,61 @@ func TestFileSource_Reload(t *testing.T) {
 			t.Fatalf("expected 99 revoked after reload, got status=%v err=%v", cs.Status, err)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestFileSource_HTTPDownload(t *testing.T) {
+	crlBytes, err := os.ReadFile(testCRLPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pkix-crl")
+		_, _ = w.Write(crlBytes)
+	}))
+	defer srv.Close()
+
+	s, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("expected healthy")
+	}
+	cs, err := s.GetStatus(big.NewInt(42), testIssuerCert)
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if cs.Status != StatusRevoked {
+		t.Fatalf("expected revoked, got %v", cs.Status)
+	}
+}
+
+func TestFileSource_HTTPDownloadFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error when server returns 500")
+	}
+}
+
+func TestFileSource_HTTPTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// hang forever
+		select {}
+	}))
+	defer srv.Close()
+
+	// Use a very short timeout by relying on the server being closed
+	// after a short period — we close the server immediately.
+	srv.Close()
+
+	_, err := NewFileSource(srv.URL+"/ca.crl", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error when server is unreachable")
 	}
 }

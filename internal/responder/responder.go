@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -38,7 +39,7 @@ type signer interface {
 	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error)
 }
 
-func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, metrics MetricsRecorder, logger *slog.Logger) *Responder {
+func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, metrics MetricsRecorder, cacheEntriesGauge prometheus.Gauge, logger *slog.Logger) *Responder {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -46,10 +47,11 @@ func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntr
 		source: src,
 		signer: sgn,
 		cache: &cache{
-			entries:    make(map[string]*cacheEntry),
-			ttl:        cacheTTL,
-			maxEntries: maxEntries,
-			enabled:    cacheEnabled,
+			entries:      make(map[string]*cacheEntry),
+			ttl:          cacheTTL,
+			maxEntries:   maxEntries,
+			enabled:      cacheEnabled,
+			entriesGauge: cacheEntriesGauge,
 		},
 		metrics: metrics,
 		logger:  logger,
@@ -130,11 +132,12 @@ func statusString(s source.Status) string {
 }
 
 type cache struct {
-	mu         sync.RWMutex
-	entries    map[string]*cacheEntry
-	ttl        time.Duration
-	maxEntries int
-	enabled    bool
+	mu           sync.RWMutex
+	entries      map[string]*cacheEntry
+	ttl          time.Duration
+	maxEntries   int
+	enabled      bool
+	entriesGauge prometheus.Gauge // optional, nil = no gauge update
 }
 
 type cacheEntry struct {
@@ -155,7 +158,11 @@ func (c *cache) get(key string) ([]byte, bool) {
 	if time.Now().After(e.expiresAt) {
 		c.mu.Lock()
 		delete(c.entries, key)
+		n := len(c.entries)
 		c.mu.Unlock()
+		if c.entriesGauge != nil {
+			c.entriesGauge.Set(float64(n))
+		}
 		return nil, false
 	}
 	return e.data, true
@@ -174,4 +181,8 @@ func (c *cache) set(key string, data []byte) {
 		}
 	}
 	c.entries[key] = &cacheEntry{data: data, expiresAt: time.Now().Add(c.ttl)}
+	n := len(c.entries)
+	if c.entriesGauge != nil {
+		c.entriesGauge.Set(float64(n))
+	}
 }

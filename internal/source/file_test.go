@@ -83,6 +83,7 @@ func TestFileSource_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 	cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -97,6 +98,7 @@ func TestFileSource_Revoked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 	cs, err := s.GetStatus(context.Background(), big.NewInt(42), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -119,6 +121,7 @@ func TestFileSource_NotInCRL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 	cs, err := s.GetStatus(context.Background(), big.NewInt(999), testIssuerCert)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -153,6 +156,7 @@ func TestFileSource_Reload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 	if cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); err != nil || cs.Status != StatusGood {
 		t.Fatalf("expected initial good for 99, got %v err=%v", cs.Status, err)
 	}
@@ -195,6 +199,7 @@ func TestFileSource_HTTPDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 	if !s.Healthy() {
 		t.Fatal("expected healthy")
 	}
@@ -238,6 +243,7 @@ func TestFileSource_RejectsMismatchedIssuerCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
 	}
+	defer s.Stop()
 
 	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

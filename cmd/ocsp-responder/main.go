@@ -46,6 +46,9 @@ func main() {
 		logger.Error("failed to create source", "err", err)
 		os.Exit(1)
 	}
+	if fs, ok := src.(*source.FileSource); ok {
+		defer fs.Stop()
+	}
 
 	// Start expiry monitor with a context that is cancelled on SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

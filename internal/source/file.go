@@ -20,7 +20,7 @@ import (
 // FileSource reads a CRL file (PEM or DER format) and uses it to determine certificate status.
 // crl_path may be a local file path or an HTTP(S) URL.
 // It automatically reloads the CRL when the file is modified (file) or on each reload interval (URL).
-// It is safe for concurrent use.
+// It is safe for concurrent use. Call Stop() to release the background reload goroutine.
 type FileSource struct {
 	crlPath        string
 	reloadInterval time.Duration
@@ -33,6 +33,8 @@ type FileSource struct {
 
 	lastModMu sync.RWMutex
 	lastMod   time.Time
+
+	done chan struct{}
 }
 
 // NewFileSource creates a FileSource.
@@ -43,12 +45,17 @@ func NewFileSource(crlPath string, reloadInterval time.Duration, issuerCert *x50
 		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate is required")
 	}
 	isURL := strings.HasPrefix(crlPath, "http://") || strings.HasPrefix(crlPath, "https://")
-	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, issuerCert: issuerCert, isURL: isURL}
+	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, issuerCert: issuerCert, isURL: isURL, done: make(chan struct{})}
 	if err := s.loadCRL(); err != nil {
 		return nil, err
 	}
 	go s.reloadLoop()
 	return s, nil
+}
+
+// Stop stops the background CRL reload goroutine. It is safe to call once.
+func (s *FileSource) Stop() {
+	close(s.done)
 }
 
 func (s *FileSource) Name() string { return "file" }
@@ -100,27 +107,32 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 func (s *FileSource) reloadLoop() {
 	t := time.NewTicker(s.reloadInterval)
 	defer t.Stop()
-	for range t.C {
-		if s.isURL {
-			if err := s.loadFromURL(); err != nil {
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
+			if s.isURL {
+				if err := s.loadFromURL(); err != nil {
+					s.loaded.Store(false)
+				}
+				continue
+			}
+			info, err := os.Stat(s.crlPath)
+			if err != nil {
+				s.loaded.Store(false)
+				continue
+			}
+			mod := info.ModTime()
+			s.lastModMu.RLock()
+			last := s.lastMod
+			s.lastModMu.RUnlock()
+			if !mod.After(last) {
+				continue
+			}
+			if err := s.loadFromDisk(); err != nil {
 				s.loaded.Store(false)
 			}
-			continue
-		}
-		info, err := os.Stat(s.crlPath)
-		if err != nil {
-			s.loaded.Store(false)
-			continue
-		}
-		mod := info.ModTime()
-		s.lastModMu.RLock()
-		last := s.lastMod
-		s.lastModMu.RUnlock()
-		if !mod.After(last) {
-			continue
-		}
-		if err := s.loadFromDisk(); err != nil {
-			s.loaded.Store(false)
 		}
 	}
 }

@@ -143,6 +143,74 @@ func TestSigner_IssuerCert(t *testing.T) {
 	}
 }
 
+func TestSigner_RejectsNonexistentCertFile(t *testing.T) {
+	if _, err := NewSigner("/nonexistent/ocsp.crt", ocspKeyPath, issuerCertPath, time.Hour); err == nil {
+		t.Fatal("expected error for nonexistent cert file")
+	}
+}
+
+func TestSigner_RejectsNonexistentKeyFile(t *testing.T) {
+	if _, err := NewSigner(ocspCertPath, "/nonexistent/ocsp.key", issuerCertPath, time.Hour); err == nil {
+		t.Fatal("expected error for nonexistent key file")
+	}
+}
+
+func TestSigner_RejectsNonCAIssuer(t *testing.T) {
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(200),
+		Subject:               pkix.Name{CommonName: "Leaf (not CA)"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  false, // intentionally not a CA
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, leafTmpl, leafTmpl, &leafKey.PublicKey, leafKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	dir := t.TempDir()
+	nonCAPath := filepath.Join(dir, "non-ca.crt")
+	if err := os.WriteFile(nonCAPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := NewSigner(ocspCertPath, ocspKeyPath, nonCAPath, time.Hour); err == nil {
+		t.Fatal("expected error for non-CA issuer")
+	}
+}
+
+func TestSigner_RejectsIssuerWithoutCertSign(t *testing.T) {
+	noCertSignKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	noCertSignTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(201),
+		Subject:               pkix.Name{CommonName: "CA without CertSign"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCRLSign, // no KeyUsageCertSign
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, noCertSignTmpl, noCertSignTmpl, &noCertSignKey.PublicKey, noCertSignKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	dir := t.TempDir()
+	noCertSignPath := filepath.Join(dir, "no-certsign.crt")
+	if err := os.WriteFile(noCertSignPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := NewSigner(ocspCertPath, ocspKeyPath, noCertSignPath, time.Hour); err == nil {
+		t.Fatal("expected error for issuer without KeyUsageCertSign")
+	}
+}
+
 func TestSigner_LoadsValidCert(t *testing.T) {
 	if _, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour); err != nil {
 		t.Fatalf("NewSigner: %v", err)

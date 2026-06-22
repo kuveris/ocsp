@@ -331,3 +331,9 @@ func TestSerialHex_Nil(t *testing.T) {
 		t.Fatalf("expected empty string for nil, got %q", got)
 	}
 }
+
+func TestStatusString_Default(t *testing.T) {
+	if got := statusString(source.Status(99)); got != "unknown" {
+		t.Fatalf("expected 'unknown' for invalid status, got %q", got)
+	}
+}

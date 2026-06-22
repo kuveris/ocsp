@@ -257,3 +257,44 @@ func writeTempConfig(t *testing.T, body string) string {
 	}
 	return p
 }
+
+func TestLoad_ValidConfig(t *testing.T) {
+	cfgPath := writeTempConfig(t, `
+signer:
+  cert_file: "certs/ocsp.crt"
+  key_file: "certs/ocsp.key"
+  issuer_cert_file: "certs/issuer.crt"
+  response_validity: "24h"
+source:
+  type: "static"
+  static:
+    status: "good"
+cache:
+  enabled: true
+  ttl: "1h"
+  max_entries: 1000
+`)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("expected valid load, got: %v", err)
+	}
+	if cfg.Signer.CertFile != "certs/ocsp.crt" {
+		t.Fatalf("unexpected cert_file: %q", cfg.Signer.CertFile)
+	}
+}
+
+func TestLoad_FileNotFound(t *testing.T) {
+	_, err := Load("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Fatal("expected error for nonexistent config file")
+	}
+}
+
+func TestLoad_InvalidYAML(t *testing.T) {
+	// A YAML document with a tab used for root-level indentation is a parse error.
+	cfgPath := writeTempConfig(t, "\tkey: value")
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}

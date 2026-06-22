@@ -2,6 +2,8 @@ package signer
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -383,6 +385,145 @@ func TestSigner_StartExpiryMonitor_SetsGauge(t *testing.T) {
 
 	if recorded != float64(s.DaysUntilExpiry()) {
 		t.Fatalf("gauge = %v, want %d", recorded, s.DaysUntilExpiry())
+	}
+}
+
+// makeECDSASigner creates an ECDSA P-256 signing cert + PKCS8 key on disk, signed by the global issuer.
+func makeECDSASigner(t *testing.T, key *ecdsa.PrivateKey) (certPath, keyPath string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(600),
+		Subject:      pkix.Name{CommonName: "ECDSA OCSP Signer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, issuerCert, &key.PublicKey, issuerKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+
+	certPath = filepath.Join(dir, "ecdsa-signer.crt")
+	keyPath = filepath.Join(dir, "ecdsa-signer.key")
+
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("WriteFile cert: %v", err)
+	}
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	return certPath, keyPath
+}
+
+func TestSigner_LoadsValidECDSACert(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	certPath, keyPath := makeECDSASigner(t, key)
+	if _, err := NewSigner(certPath, keyPath, issuerCertPath, time.Hour); err != nil {
+		t.Fatalf("NewSigner with ECDSA cert: %v", err)
+	}
+}
+
+func TestSigner_RejectsECDSAKeyMismatch(t *testing.T) {
+	key1, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey key1: %v", err)
+	}
+	key2, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey key2: %v", err)
+	}
+
+	certPath, _ := makeECDSASigner(t, key1)
+
+	dir := t.TempDir()
+	mismatchKeyPath := filepath.Join(dir, "wrong.key")
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(key2)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
+	}
+	if err := os.WriteFile(mismatchKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := NewSigner(certPath, mismatchKeyPath, issuerCertPath, time.Hour); err == nil {
+		t.Fatal("expected error for ECDSA key mismatch")
+	}
+}
+
+func TestVerifyKeyMatches_RSACertWithECDSAKey(t *testing.T) {
+	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	// ocspCert has an RSA public key; passing an ECDSA key must fail.
+	if err := verifyKeyMatches(ocspCert, ecdsaKey); err == nil {
+		t.Fatal("expected error for RSA cert with ECDSA key")
+	}
+}
+
+func TestVerifyKeyMatches_ECDSACertWithRSAKey(t *testing.T) {
+	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(700),
+		Subject:      pkix.Name{CommonName: "ECDSA cert for mismatch test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, issuerCert, &ecdsaKey.PublicKey, issuerKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	// cert has ECDSA public key; passing an RSA key must fail.
+	if err := verifyKeyMatches(cert, rsaKey); err == nil {
+		t.Fatal("expected error for ECDSA cert with RSA key")
+	}
+}
+
+func TestSigner_CreateResponse_ECDSASigner(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	certPath, keyPath := makeECDSASigner(t, key)
+	s, err := NewSigner(certPath, keyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+
+	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now())
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	resp, err := xocsp.ParseResponseForCert(der, nil, issuerCert)
+	if err != nil {
+		t.Fatalf("ParseResponseForCert: %v", err)
+	}
+	if resp.Status != xocsp.Good {
+		t.Fatalf("expected good, got %d", resp.Status)
 	}
 }
 

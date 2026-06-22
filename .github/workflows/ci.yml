@@ -22,6 +22,9 @@ jobs:
       - name: Verify module graph
         run: go mod tidy && git diff --exit-code
 
+      - name: Vet
+        run: go vet ./...
+
       - name: Run unit tests
         run: go test ./...
 

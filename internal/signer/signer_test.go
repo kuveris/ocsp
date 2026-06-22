@@ -129,6 +129,20 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestSigner_IssuerCert(t *testing.T) {
+	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	got := s.IssuerCert()
+	if got == nil {
+		t.Fatal("expected non-nil issuer cert")
+	}
+	if got.Subject.CommonName != "Test Issuer" {
+		t.Fatalf("unexpected issuer CN: %q", got.Subject.CommonName)
+	}
+}
+
 func TestSigner_LoadsValidCert(t *testing.T) {
 	if _, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour); err != nil {
 		t.Fatalf("NewSigner: %v", err)

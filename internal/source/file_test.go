@@ -271,3 +271,14 @@ func TestFileSource_RejectsMismatchedIssuerCertificate(t *testing.T) {
 		t.Fatal("expected CRL issuer verification error")
 	}
 }
+
+func TestFileSource_Name(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+	if got := s.Name(); got != "file" {
+		t.Fatalf("expected 'file', got %q", got)
+	}
+}

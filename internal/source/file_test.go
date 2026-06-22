@@ -366,3 +366,39 @@ func TestFileSource_RevokedWithReasonCode(t *testing.T) {
 		t.Fatalf("expected reason=1, got %+v", cs.RevocationInfo)
 	}
 }
+
+func TestFileSource_CRLWrongIssuer(t *testing.T) {
+	// Generate a different CA and sign a CRL with it.
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	otherCATmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(999),
+		Subject:               pkix.Name{CommonName: "Other CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	otherCADER, err := x509.CreateCertificate(rand.Reader, otherCATmpl, otherCATmpl, &otherKey.PublicKey, otherKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	otherCA, err := x509.ParseCertificate(otherCADER)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+
+	// CRL signed by otherCA, but we'll try to load it against testIssuerCert.
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "other.crl")
+	if err := writeCRL(path, otherCA, otherKey, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	if _, err := NewFileSource(path, time.Minute, testIssuerCert); err == nil {
+		t.Fatal("expected error when CRL is signed by a different issuer")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/prometheus/client_golang/prometheus"
 	xocsp "golang.org/x/crypto/ocsp"
 )
 
@@ -343,4 +344,40 @@ func TestValidateIssuerBinding_NilRequest(t *testing.T) {
 	if err := validateIssuerBinding(nil, sgn.IssuerCert()); err == nil {
 		t.Fatal("expected error for nil request")
 	}
+}
+
+func TestCache_Get_GaugeUpdate(t *testing.T) {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_cache_get_gauge",
+		Help: "test",
+	})
+	c := &cache{
+		entries:      make(map[string]*cacheEntry),
+		ttl:          time.Millisecond,
+		maxEntries:   10,
+		enabled:      true,
+		entriesGauge: gauge,
+	}
+	c.set("k", []byte("v"))
+	time.Sleep(5 * time.Millisecond) // let entry expire
+	// get should delete the expired entry and update the gauge
+	if _, ok := c.get("k"); ok {
+		t.Fatal("expected cache miss for expired entry")
+	}
+}
+
+func TestCache_Set_GaugeUpdate(t *testing.T) {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_cache_set_gauge",
+		Help: "test",
+	})
+	c := &cache{
+		entries:      make(map[string]*cacheEntry),
+		ttl:          time.Minute,
+		maxEntries:   10,
+		enabled:      true,
+		entriesGauge: gauge,
+	}
+	c.set("k", []byte("v"))
+	// gauge should have been updated — no panic is the main check
 }

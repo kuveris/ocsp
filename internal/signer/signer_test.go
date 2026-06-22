@@ -290,6 +290,16 @@ func TestSigner_RejectsSignerNotSignedByIssuer(t *testing.T) {
 	}
 }
 
+func TestSigner_CreateResponse_UnsupportedStatus(t *testing.T) {
+	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	if _, err := s.CreateResponse(big.NewInt(1), source.Status(99), nil, time.Now()); err == nil {
+		t.Fatal("expected error for unsupported status")
+	}
+}
+
 func TestSigner_CreateResponse_Good(t *testing.T) {
 	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour)
 	if err != nil {

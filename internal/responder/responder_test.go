@@ -17,6 +17,18 @@ import (
 	xocsp "golang.org/x/crypto/ocsp"
 )
 
+type fakeMetrics struct {
+	cacheHits   int
+	cacheMisses int
+	sourceReqs  int
+	requests    int
+}
+
+func (f *fakeMetrics) RecordRequest(method, status string, durationSeconds float64) { f.requests++ }
+func (f *fakeMetrics) RecordSourceRequest(sourceName, result string)                 { f.sourceReqs++ }
+func (f *fakeMetrics) RecordCacheHit()                                               { f.cacheHits++ }
+func (f *fakeMetrics) RecordCacheMiss()                                              { f.cacheMisses++ }
+
 type testSigner struct {
 	issuer *x509.Certificate
 
@@ -363,6 +375,57 @@ func TestCache_Get_GaugeUpdate(t *testing.T) {
 	// get should delete the expired entry and update the gauge
 	if _, ok := c.get("k"); ok {
 		t.Fatal("expected cache miss for expired entry")
+	}
+}
+
+func TestHandle_MetricsRecorded(t *testing.T) {
+	sgn := newTestSigner(t)
+	src, _ := source.NewStaticSource("good")
+	m := &fakeMetrics{}
+	r := NewResponder(src, sgn, time.Minute, 100, true, m, nil, nil)
+	req := makeRequest(t, sgn.IssuerCert(), big.NewInt(77))
+
+	// First call: cache miss + source request recorded
+	if _, err := r.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if m.cacheMisses != 1 {
+		t.Fatalf("expected 1 cache miss, got %d", m.cacheMisses)
+	}
+	if m.sourceReqs != 1 {
+		t.Fatalf("expected 1 source request, got %d", m.sourceReqs)
+	}
+
+	// Second call: cache hit recorded
+	if _, err := r.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if m.cacheHits != 1 {
+		t.Fatalf("expected 1 cache hit, got %d", m.cacheHits)
+	}
+}
+
+func TestValidateIssuerBinding_KeyHashMismatch(t *testing.T) {
+	sgn := newTestSigner(t)
+	issuer := sgn.IssuerCert()
+
+	// Compute the correct name hash so the name-hash check passes.
+	h := crypto.SHA1
+	nameHasher := h.New()
+	nameHasher.Write(issuer.RawSubject)
+	correctNameHash := nameHasher.Sum(nil)
+
+	// Use a zeroed key hash of the right length — it won't match the real SPKI hash.
+	wrongKeyHash := make([]byte, 20)
+
+	req := &xocsp.Request{
+		HashAlgorithm:  crypto.SHA1,
+		IssuerNameHash: correctNameHash,
+		IssuerKeyHash:  wrongKeyHash,
+		SerialNumber:   big.NewInt(1),
+	}
+	if err := validateIssuerBinding(req, issuer); err == nil {
+		t.Fatal("expected key hash mismatch error")
 	}
 }
 

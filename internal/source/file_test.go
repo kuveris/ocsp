@@ -367,6 +367,76 @@ func TestFileSource_RevokedWithReasonCode(t *testing.T) {
 	}
 }
 
+func TestFileSource_ReloadLoop_StatError(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "loop.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	if !s.Healthy() {
+		t.Fatal("expected healthy before file deletion")
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Wait for reload tick + slack; reloadLoop stat error sets loaded=false.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !s.Healthy() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected source to become unhealthy after file deletion")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestFileSource_ReloadLoop_FileNotModified(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nomod.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	// Wait for multiple reload ticks; 2nd+ ticks hit !mod.After(last) and skip reload.
+	time.Sleep(80 * time.Millisecond)
+
+	// Source should still be healthy — skipping reload on unchanged file is benign.
+	if !s.Healthy() {
+		t.Fatal("expected source to remain healthy when file not modified")
+	}
+}
+
+func TestFileSource_LoadFromDisk_StatError(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	s.crlPath = "/nonexistent/does/not/exist.crl"
+	s.isURL = false
+	if err := s.loadFromDisk(); err == nil {
+		t.Fatal("expected error for nonexistent file path")
+	}
+}
+
 func TestFileSource_CRLWrongIssuer(t *testing.T) {
 	// Generate a different CA and sign a CRL with it.
 	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)

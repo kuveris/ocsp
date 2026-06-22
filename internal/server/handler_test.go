@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -22,8 +23,30 @@ import (
 	"github.com/hartmann-it/ocsp-responder/internal/responder"
 	"github.com/hartmann-it/ocsp-responder/internal/signer"
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/prometheus/client_golang/prometheus"
 	xocsp "golang.org/x/crypto/ocsp"
 )
+
+// errReader is an io.Reader that immediately returns an error.
+type errReader struct{ err error }
+
+func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }
+
+// newTestMetrics builds a *Metrics with unregistered prometheus collectors.
+// These are never registered to any registry, so they work in any test binary
+// regardless of what other tests do with the global default registry.
+func newTestMetrics() *Metrics {
+	return &Metrics{
+		RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "test_handler_requests_total",
+			Help: "test",
+		}, []string{"method", "status"}),
+		RequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "test_handler_request_duration_seconds",
+			Help: "test",
+		}, []string{"method"}),
+	}
+}
 
 // testPKI holds in-memory and on-disk PKI material for handler tests.
 type testPKI struct {
@@ -353,6 +376,53 @@ func TestParseOCSPStatus_Unknown(t *testing.T) {
 func TestParseOCSPStatus_InvalidDER(t *testing.T) {
 	if got := parseOCSPStatus([]byte("not a valid ocsp response")); got != "error" {
 		t.Fatalf("expected error, got %q", got)
+	}
+}
+
+func TestServeOCSP_POST_ReadBodyError(t *testing.T) {
+	handler := ServeOCSP(nil, time.Minute, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/", &errReader{err: fmt.Errorf("injected read error")})
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestServeOCSP_POST_WithMetrics_Error(t *testing.T) {
+	m := newTestMetrics()
+	handler := ServeOCSP(nil, time.Minute, m, nil)
+	// Malformed body → Handle returns error → metrics.RecordRequest("post", "error", ...) path
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("nope")))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestServeOCSP_POST_WithMetrics_Success(t *testing.T) {
+	pki := setupTestPKI(t, time.Now().Add(24*time.Hour))
+	sgn, err := signer.NewSigner(pki.ocspCertPath, pki.ocspKeyPath, pki.issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	src, _ := source.NewStaticSource("good")
+	r := responder.NewResponder(src, sgn, time.Minute, 100, true, nil, nil, nil)
+
+	certTmpl := &x509.Certificate{SerialNumber: big.NewInt(88)}
+	reqDER, err := xocsp.CreateRequest(certTmpl, pki.issuerCert, nil)
+	if err != nil {
+		t.Fatalf("CreateRequest: %v", err)
+	}
+
+	m := newTestMetrics()
+	handler := ServeOCSP(r, time.Minute, m, nil)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(reqDER))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }
 

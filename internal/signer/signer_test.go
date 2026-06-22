@@ -305,9 +305,10 @@ func TestSigner_DaysUntilExpiry_Valid(t *testing.T) {
 }
 
 func TestSigner_DaysUntilExpiry_Expired(t *testing.T) {
-	// Use a cert expired 25 hours ago so DaysUntilExpiry returns -1 (int truncation
-	// of a -1h expiry yields 0, not negative — see HAR-459 for the edge-case bug).
-	s := createSignerWithExpiry(t, -25*time.Hour)
+	s, err := NewSigner(expiredCertPath, expiredKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
 	if days := s.DaysUntilExpiry(); days >= 0 {
 		t.Fatalf("expected negative days for expired cert, got %d", days)
 	}
@@ -335,8 +336,10 @@ func TestSigner_GetExpiryStatus_Critical(t *testing.T) {
 }
 
 func TestSigner_GetExpiryStatus_Expired(t *testing.T) {
-	// Use a cert expired 25 hours ago to guarantee DaysUntilExpiry() < 0.
-	s := createSignerWithExpiry(t, -25*time.Hour)
+	s, err := NewSigner(expiredCertPath, expiredKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
 	if got := s.GetExpiryStatus(); got != ExpiryExpired {
 		t.Fatalf("expected ExpiryExpired, got %v", got)
 	}

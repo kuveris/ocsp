@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/big"
 	"os"
 	"time"
@@ -139,9 +140,9 @@ func (s *Signer) Valid() bool {
 
 // DaysUntilExpiry returns the number of complete days until the signing certificate expires.
 // Returns a negative number if the certificate is already expired.
-// The value is truncated (floor), so 7 days and 23 hours returns 7.
+// Uses floor division: 7 days and 23 hours returns 7; a cert expired 1 hour ago returns -1.
 func (s *Signer) DaysUntilExpiry() int {
-	return int(time.Until(s.cert.NotAfter).Hours() / 24)
+	return int(math.Floor(time.Until(s.cert.NotAfter).Hours() / 24))
 }
 
 // ExpiryStatus returns the current expiry status of the signing certificate.

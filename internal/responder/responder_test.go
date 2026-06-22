@@ -259,3 +259,75 @@ func TestHandle_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context cancellation error")
 	}
 }
+
+func TestCache_Get_Disabled(t *testing.T) {
+	c := &cache{
+		entries:    make(map[string]*cacheEntry),
+		ttl:        time.Minute,
+		maxEntries: 10,
+		enabled:    false,
+	}
+	// Manually insert an entry to verify get ignores it when disabled.
+	c.entries["key"] = &cacheEntry{data: []byte("data"), expiresAt: time.Now().Add(time.Minute)}
+	if _, ok := c.get("key"); ok {
+		t.Fatal("expected cache miss when cache is disabled")
+	}
+}
+
+func TestCache_Get_ExpiredEntry(t *testing.T) {
+	c := &cache{
+		entries:    make(map[string]*cacheEntry),
+		ttl:        time.Millisecond,
+		maxEntries: 10,
+		enabled:    true,
+	}
+	c.set("key", []byte("data"))
+	time.Sleep(5 * time.Millisecond)
+	if _, ok := c.get("key"); ok {
+		t.Fatal("expected cache miss for expired entry")
+	}
+	// Entry must have been deleted.
+	if len(c.entries) != 0 {
+		t.Fatalf("expected empty cache after expiry, got %d entries", len(c.entries))
+	}
+}
+
+func TestCache_Set_MaxEntriesZero(t *testing.T) {
+	c := &cache{
+		entries:    make(map[string]*cacheEntry),
+		ttl:        time.Minute,
+		maxEntries: 0,
+		enabled:    true,
+	}
+	c.set("key", []byte("data"))
+	if len(c.entries) != 0 {
+		t.Fatal("expected no entry when maxEntries=0")
+	}
+}
+
+func TestCache_Set_Eviction(t *testing.T) {
+	c := &cache{
+		entries:    make(map[string]*cacheEntry),
+		ttl:        time.Minute,
+		maxEntries: 2,
+		enabled:    true,
+	}
+	c.set("a", []byte("1"))
+	c.set("b", []byte("2"))
+	c.set("c", []byte("3")) // should evict one entry
+	if len(c.entries) > 2 {
+		t.Fatalf("expected at most 2 entries after eviction, got %d", len(c.entries))
+	}
+}
+
+func TestEqualBytes_UnequalLength(t *testing.T) {
+	if equalBytes([]byte{1, 2, 3}, []byte{1, 2}) {
+		t.Fatal("expected false for slices of different length")
+	}
+}
+
+func TestSerialHex_Nil(t *testing.T) {
+	if got := serialHex(nil); got != "" {
+		t.Fatalf("expected empty string for nil, got %q", got)
+	}
+}

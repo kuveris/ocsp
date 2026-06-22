@@ -337,3 +337,10 @@ func TestStatusString_Default(t *testing.T) {
 		t.Fatalf("expected 'unknown' for invalid status, got %q", got)
 	}
 }
+
+func TestValidateIssuerBinding_NilRequest(t *testing.T) {
+	sgn := newTestSigner(t)
+	if err := validateIssuerBinding(nil, sgn.IssuerCert()); err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}

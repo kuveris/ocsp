@@ -282,3 +282,87 @@ func TestFileSource_Name(t *testing.T) {
 		t.Fatalf("expected 'file', got %q", got)
 	}
 }
+
+func TestFileSource_GetStatus_Unloaded(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	s.loaded.Store(false) // simulate a failed CRL reload
+	_, err = s.GetStatus(context.Background(), big.NewInt(1), testIssuerCert)
+	if err != ErrSourceUnhealthy {
+		t.Fatalf("expected ErrSourceUnhealthy, got %v", err)
+	}
+}
+
+func TestFileSource_GetStatus_NilIssuer(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	_, err = s.GetStatus(context.Background(), big.NewInt(1), nil)
+	if err == nil {
+		t.Fatal("expected error for nil issuer")
+	}
+}
+
+func TestFileSource_GetStatus_CanceledContext(t *testing.T) {
+	s, err := NewFileSource(testCRLPath, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = s.GetStatus(ctx, big.NewInt(1), testIssuerCert)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestFileSource_RevokedWithReasonCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "reason.crl")
+
+	rl := &x509.RevocationList{
+		Number:     big.NewInt(2),
+		ThisUpdate: time.Now().Add(-time.Minute),
+		NextUpdate: time.Now().Add(time.Hour),
+		RevokedCertificateEntries: []x509.RevocationListEntry{
+			{
+				SerialNumber:   big.NewInt(55),
+				RevocationTime: time.Now(),
+				ReasonCode:     1, // keyCompromise
+			},
+		},
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, rl, testIssuerCert, testIssuerKey)
+	if err != nil {
+		t.Fatalf("CreateRevocationList: %v", err)
+	}
+	if err := os.WriteFile(path, der, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s, err := NewFileSource(path, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	cs, err := s.GetStatus(context.Background(), big.NewInt(55), testIssuerCert)
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if cs.Status != StatusRevoked {
+		t.Fatalf("expected revoked, got %v", cs.Status)
+	}
+	if cs.RevocationInfo == nil || cs.RevocationInfo.Reason != 1 {
+		t.Fatalf("expected reason=1, got %+v", cs.RevocationInfo)
+	}
+}

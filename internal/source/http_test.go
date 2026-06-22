@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -318,5 +319,22 @@ func TestHTTPSource_ObserverTracksRetryAndError(t *testing.T) {
 	}
 	if observer.latency == 0 {
 		t.Fatal("expected latency metric to be recorded")
+	}
+}
+
+func TestClassifyHTTPSourceError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"},
+		{context.DeadlineExceeded, "timeout"},
+		{context.Canceled, "canceled"},
+		{fmt.Errorf("connection refused"), "transport_or_upstream"},
+	}
+	for _, tc := range cases {
+		if got := classifyHTTPSourceError(tc.err); got != tc.want {
+			t.Errorf("classifyHTTPSourceError(%v) = %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }

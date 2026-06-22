@@ -143,6 +143,18 @@ func TestSigner_IssuerCert(t *testing.T) {
 	}
 }
 
+func TestVerifySignerTrust_NilCert(t *testing.T) {
+	if err := verifySignerTrust(nil, issuerCert); err == nil {
+		t.Fatal("expected error for nil cert")
+	}
+}
+
+func TestVerifySignerTrust_NilIssuer(t *testing.T) {
+	if err := verifySignerTrust(ocspCert, nil); err == nil {
+		t.Fatal("expected error for nil issuer")
+	}
+}
+
 func TestSigner_RejectsNonexistentCertFile(t *testing.T) {
 	if _, err := NewSigner("/nonexistent/ocsp.crt", ocspKeyPath, issuerCertPath, time.Hour); err == nil {
 		t.Fatal("expected error for nonexistent cert file")

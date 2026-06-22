@@ -5,4 +5,4 @@ certs/*.der
 certs/*.crl
 certs/*.p12
 /ocsp-responder
-
+coverage.out

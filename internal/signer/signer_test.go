@@ -1,18 +1,22 @@
 package signer
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/prometheus/client_golang/prometheus"
 	xocsp "golang.org/x/crypto/ocsp"
 )
 
@@ -252,4 +256,143 @@ func TestSigner_ExpiredCert(t *testing.T) {
 	if s.Valid() {
 		t.Fatal("expected Valid() = false for expired cert")
 	}
+}
+
+// createSignerWithExpiry generates a fresh OCSP signing cert with the given NotAfter
+// offset from now, signed by the global issuerCert/issuerKey from TestMain.
+func createSignerWithExpiry(t *testing.T, notAfterOffset time.Duration) *Signer {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(500),
+		Subject:      pkix.Name{CommonName: "Expiry Test Signer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(notAfterOffset),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, issuerCert, &key.PublicKey, issuerKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "signer.crt")
+	keyPath := filepath.Join(dir, "signer.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("WriteFile cert: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatalf("WriteFile key: %v", err)
+	}
+	s, err := NewSigner(certPath, keyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	return s
+}
+
+func TestSigner_DaysUntilExpiry_Valid(t *testing.T) {
+	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	if days := s.DaysUntilExpiry(); days < 0 {
+		t.Fatalf("expected non-negative days for valid cert, got %d", days)
+	}
+}
+
+func TestSigner_DaysUntilExpiry_Expired(t *testing.T) {
+	// Use a cert expired 25 hours ago so DaysUntilExpiry returns -1 (int truncation
+	// of a -1h expiry yields 0, not negative — see HAR-459 for the edge-case bug).
+	s := createSignerWithExpiry(t, -25*time.Hour)
+	if days := s.DaysUntilExpiry(); days >= 0 {
+		t.Fatalf("expected negative days for expired cert, got %d", days)
+	}
+}
+
+func TestSigner_GetExpiryStatus_OK(t *testing.T) {
+	s := createSignerWithExpiry(t, 60*24*time.Hour)
+	if got := s.GetExpiryStatus(); got != ExpiryOK {
+		t.Fatalf("expected ExpiryOK, got %v", got)
+	}
+}
+
+func TestSigner_GetExpiryStatus_Warning(t *testing.T) {
+	s := createSignerWithExpiry(t, 20*24*time.Hour)
+	if got := s.GetExpiryStatus(); got != ExpiryWarning {
+		t.Fatalf("expected ExpiryWarning, got %v", got)
+	}
+}
+
+func TestSigner_GetExpiryStatus_Critical(t *testing.T) {
+	s := createSignerWithExpiry(t, 5*24*time.Hour)
+	if got := s.GetExpiryStatus(); got != ExpiryCritical {
+		t.Fatalf("expected ExpiryCritical, got %v", got)
+	}
+}
+
+func TestSigner_GetExpiryStatus_Expired(t *testing.T) {
+	// Use a cert expired 25 hours ago to guarantee DaysUntilExpiry() < 0.
+	s := createSignerWithExpiry(t, -25*time.Hour)
+	if got := s.GetExpiryStatus(); got != ExpiryExpired {
+		t.Fatalf("expected ExpiryExpired, got %v", got)
+	}
+}
+
+func TestSigner_ExpiryStatusString(t *testing.T) {
+	cases := []struct {
+		status ExpiryStatus
+		want   string
+	}{
+		{ExpiryOK, "ok"},
+		{ExpiryWarning, "warning"},
+		{ExpiryCritical, "critical"},
+		{ExpiryExpired, "expired"},
+		{ExpiryStatus(99), "unknown"},
+	}
+	for _, tc := range cases {
+		if got := ExpiryStatusString(tc.status); got != tc.want {
+			t.Errorf("ExpiryStatusString(%d) = %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestSigner_StartExpiryMonitor_SetsGauge(t *testing.T) {
+	s := createSignerWithExpiry(t, 60*24*time.Hour)
+
+	g := &recordingGauge{Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_signer_days_until_expiry",
+		Help: "test gauge",
+	})}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so the monitor goroutine exits quickly
+
+	s.StartExpiryMonitor(ctx, slog.Default(), g)
+	time.Sleep(20 * time.Millisecond) // give the goroutine time to set the gauge
+
+	g.mu.Lock()
+	recorded := g.recorded
+	g.mu.Unlock()
+
+	if recorded != float64(s.DaysUntilExpiry()) {
+		t.Fatalf("gauge = %v, want %d", recorded, s.DaysUntilExpiry())
+	}
+}
+
+// recordingGauge wraps a prometheus.Gauge and records the most recent Set value.
+type recordingGauge struct {
+	prometheus.Gauge
+	mu       sync.Mutex
+	recorded float64
+}
+
+func (r *recordingGauge) Set(v float64) {
+	r.mu.Lock()
+	r.recorded = v
+	r.mu.Unlock()
+	r.Gauge.Set(v)
 }

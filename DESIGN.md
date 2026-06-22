@@ -1,6 +1,6 @@
 # ocsp-responder — Design Document
 
-**Version:** 0.1.0  
+**Version:** 0.2.0  
 **Status:** Implemented (maintained as architecture reference)  
 **Language:** Go 1.22+  
 **Repo:** `github.com/hartmann-it/ocsp-responder`  
@@ -66,11 +66,9 @@ stecken können:
 
 | Source | Beschreibung | Wann sinnvoll |
 |---|---|---|
-| `file` | Liest eine CRL-Datei (PEM oder DER), Hot-Reload | step-ca, OpenSSL, jede CA mit CRL-Export |
-| `http` | Fragt eine CA-REST-API ab | step-ca API, EJBCA, jede CA mit HTTP-API |
-| `static` | Hardcodierte Antwort | Tests, Entwicklung |
-
-`file`, `http`, and `static` sources are implemented.
+| `file` ✅ | Liest eine CRL-Datei (PEM oder DER), Hot-Reload, HTTP(S)-URL | step-ca, OpenSSL, jede CA mit CRL-Export |
+| `http` ✅ | Fragt eine CA-REST-API ab, konfigurierbares Response-Mapping, TLS-Pinning, Retry | step-ca API, EJBCA, jede CA mit HTTP-API |
+| `static` ✅ | Hardcodierte Antwort | Tests, Entwicklung |
 
 ---
 
@@ -241,16 +239,15 @@ GET /health
 
 | Library | Zweck |
 |---|---|
-| `golang.org/x/crypto/ocsp` (stdlib) | OCSP Request/Response parsen, Response bauen, signieren |
+| `golang.org/x/crypto/ocsp` | OCSP Request/Response parsen, Response bauen, signieren |
+| `golang.org/x/crypto/acme/autocert` | Automatisches TLS via ACME (optional) |
 | `crypto/x509` (stdlib) | Zertifikat-Handling, CRL-Parsing |
 | `net/http` (stdlib) | HTTP Server |
 | `gopkg.in/yaml.v3` | Config |
-| `golang.org/x/crypto` | Crypto-Primitiven |
-
-Note: The implementation uses `golang.org/x/crypto/ocsp` directly instead of cfssl,
-eliminating an external dependency while providing equivalent functionality.
+| `github.com/prometheus/client_golang` | Prometheus Metrics (`/metrics`) |
 
 Eigencode beschränkt sich auf Source-Interface, Config, HTTP-Handler, Cache.
+cfssl wird **nicht** verwendet — `golang.org/x/crypto/ocsp` deckt alle OCSP-Operationen ab.
 
 ---
 
@@ -271,18 +268,20 @@ Eigencode beschränkt sich auf Source-Interface, Config, HTTP-Handler, Cache.
 
 ### Phase 2 — HTTP Source
 
-- [ ] `source.HTTP`: generischer REST-Client
-- [ ] Konfigurierbare Response-Interpretation
-- [ ] TLS-Verifikation mit Root-Cert-Pinning
-- [ ] Retry mit exponential Backoff
+- [x] `source.HTTP`: generischer REST-Client
+- [x] Konfigurierbare Response-Interpretation (PathTemplate, StatusField, GoodValues, RevokedValues)
+- [x] TLS-Verifikation mit Root-Cert-Pinning
+- [x] Retry mit exponential Backoff
+- [x] In-Memory-Cache mit konfigurierbarem TTL
+- [x] Observer-Interface für Prometheus-Metriken
 
 ### Phase 3 — Hardening
 
-- [ ] Signer-Cert Expiry-Monitoring (Log-Warnung X Tage vor Ablauf)
-- [ ] Prometheus Metrics (`/metrics`)
-- [ ] TLS für den HTTP-Server selbst
-- [ ] Dockerfile
-- [ ] systemd Unit-Datei Beispiel
+- [x] Signer-Cert Expiry-Monitoring (Log-Warnung/Error bei <30/<8 Tagen, Background-Goroutine)
+- [x] Prometheus Metrics (`/metrics`) — `ocsp_requests_total`, `ocsp_request_duration_seconds`, Cache- und Source-Metriken
+- [x] TLS für den HTTP-Server selbst (cert+key oder ACME/autocert)
+- [x] Dockerfile (multi-stage, non-root user)
+- [x] systemd Unit-Datei Beispiel (`examples/systemd/`)
 
 ---
 

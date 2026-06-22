@@ -358,6 +358,97 @@ func TestValidateIssuerBinding_NilRequest(t *testing.T) {
 	}
 }
 
+// failingSigner is a Signer stub whose CreateResponse always returns an error.
+type failingSigner struct{ issuer *x509.Certificate }
+
+func (f *failingSigner) IssuerCert() *x509.Certificate { return f.issuer }
+func (f *failingSigner) CreateResponse(_ *big.Int, _ source.Status, _ *source.RevocationInfo, _ time.Time) ([]byte, error) {
+	return nil, fmt.Errorf("signer error")
+}
+
+func TestValidateIssuerBinding_HashUnavailable(t *testing.T) {
+	sgn := newTestSigner(t)
+	issuer := sgn.IssuerCert()
+
+	req := &xocsp.Request{
+		HashAlgorithm:  crypto.Hash(255), // unregistered hash → !h.Available()
+		IssuerNameHash: []byte("any"),
+		IssuerKeyHash:  []byte("any"),
+		SerialNumber:   big.NewInt(1),
+	}
+	if err := validateIssuerBinding(req, issuer); err == nil {
+		t.Fatal("expected error for unavailable hash algorithm")
+	}
+}
+
+func TestValidateIssuerBinding_NameHashMismatch(t *testing.T) {
+	sgn := newTestSigner(t)
+	issuer := sgn.IssuerCert()
+
+	req := &xocsp.Request{
+		HashAlgorithm:  crypto.SHA1,
+		IssuerNameHash: make([]byte, 20), // 20 zeros — won't match SHA1(issuer.RawSubject)
+		IssuerKeyHash:  make([]byte, 20),
+		SerialNumber:   big.NewInt(1),
+	}
+	if err := validateIssuerBinding(req, issuer); err == nil {
+		t.Fatal("expected name hash mismatch error")
+	}
+}
+
+func TestValidateIssuerBinding_ASN1Error(t *testing.T) {
+	sgn := newTestSigner(t)
+	issuer := sgn.IssuerCert()
+
+	// Compute correct name hash so we get past the name-hash check.
+	nameHasher := crypto.SHA1.New()
+	nameHasher.Write(issuer.RawSubject)
+	correctNameHash := nameHasher.Sum(nil)
+
+	// Certificate with garbage SPKI so asn1.Unmarshal fails.
+	badCert := &x509.Certificate{
+		RawSubject:              issuer.RawSubject,
+		RawSubjectPublicKeyInfo: []byte("not valid asn1 garbage"),
+	}
+
+	req := &xocsp.Request{
+		HashAlgorithm:  crypto.SHA1,
+		IssuerNameHash: correctNameHash,
+		IssuerKeyHash:  make([]byte, 20),
+		SerialNumber:   big.NewInt(1),
+	}
+	if err := validateIssuerBinding(req, badCert); err == nil {
+		t.Fatal("expected ASN1 parse error")
+	}
+}
+
+func TestHandle_MetricsSourceError(t *testing.T) {
+	sgn := newTestSigner(t)
+	m := &fakeMetrics{}
+	r := NewResponder(&errSource{}, sgn, time.Minute, 100, true, m, nil, nil)
+	req := makeRequest(t, sgn.IssuerCert(), big.NewInt(11))
+
+	// Source returns error → srcErr != nil branch in metrics block fires
+	if _, err := r.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle should not return error when source fails (returns unknown): %v", err)
+	}
+	if m.sourceReqs != 1 {
+		t.Fatalf("expected 1 source request recorded, got %d", m.sourceReqs)
+	}
+}
+
+func TestHandle_SignerError(t *testing.T) {
+	sgn := newTestSigner(t)
+	src, _ := source.NewStaticSource("good")
+	fs := &failingSigner{issuer: sgn.IssuerCert()}
+	r := NewResponder(src, fs, time.Minute, 100, true, nil, nil, nil)
+	req := makeRequest(t, sgn.IssuerCert(), big.NewInt(22))
+
+	if _, err := r.Handle(context.Background(), req); err == nil {
+		t.Fatal("expected error when signer.CreateResponse fails")
+	}
+}
+
 func TestCache_Get_GaugeUpdate(t *testing.T) {
 	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "test_cache_get_gauge",

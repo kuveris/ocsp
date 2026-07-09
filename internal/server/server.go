@@ -12,10 +12,10 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/hartmann-it/ocsp-responder/internal/config"
-	"github.com/hartmann-it/ocsp-responder/internal/responder"
-	"github.com/hartmann-it/ocsp-responder/internal/signer"
-	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/kuveris/ocsp/internal/config"
+	"github.com/kuveris/ocsp/internal/responder"
+	"github.com/kuveris/ocsp/internal/signer"
+	"github.com/kuveris/ocsp/internal/source"
 )
 
 type Server struct {

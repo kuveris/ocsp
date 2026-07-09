@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hartmann-it/ocsp-responder/internal/responder"
-	"github.com/hartmann-it/ocsp-responder/internal/signer"
-	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/kuveris/ocsp/internal/responder"
+	"github.com/kuveris/ocsp/internal/signer"
+	"github.com/kuveris/ocsp/internal/source"
 	"github.com/prometheus/client_golang/prometheus"
 	xocsp "golang.org/x/crypto/ocsp"
 )

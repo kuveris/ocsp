@@ -3,7 +3,7 @@
 **Version:** 0.2.0  
 **Status:** Implemented (maintained as architecture reference)  
 **Language:** Go 1.22+  
-**Repo:** `github.com/hartmann-it/ocsp-responder`  
+**Repo:** `github.com/kuveris/ocsp`  
 
 ---
 

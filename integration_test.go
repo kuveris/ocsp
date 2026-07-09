@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hartmann-it/ocsp-responder/internal/config"
-	"github.com/hartmann-it/ocsp-responder/internal/responder"
-	"github.com/hartmann-it/ocsp-responder/internal/server"
-	"github.com/hartmann-it/ocsp-responder/internal/signer"
-	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/kuveris/ocsp/internal/config"
+	"github.com/kuveris/ocsp/internal/responder"
+	"github.com/kuveris/ocsp/internal/server"
+	"github.com/kuveris/ocsp/internal/signer"
+	"github.com/kuveris/ocsp/internal/source"
 	xocsp "golang.org/x/crypto/ocsp"
 )
 

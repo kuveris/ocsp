@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hartmann-it/ocsp-responder/internal/responder"
-	"github.com/hartmann-it/ocsp-responder/internal/signer"
-	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/kuveris/ocsp/internal/responder"
+	"github.com/kuveris/ocsp/internal/signer"
+	"github.com/kuveris/ocsp/internal/source"
 	xocsp "golang.org/x/crypto/ocsp"
 )
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hartmann-it/ocsp-responder/internal/source"
+	"github.com/kuveris/ocsp/internal/source"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/crypto/ocsp"
 )

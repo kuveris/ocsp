@@ -1,4 +1,4 @@
-module github.com/hartmann-it/ocsp-responder
+module github.com/kuveris/ocsp
 
 go 1.25.0
 

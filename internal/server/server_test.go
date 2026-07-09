@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"testing"
 
-	"github.com/hartmann-it/ocsp-responder/internal/config"
+	"github.com/kuveris/ocsp/internal/config"
 )
 
 func TestServerStart_RejectsInvalidCacheTTL(t *testing.T) {

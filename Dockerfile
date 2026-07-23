@@ -2,7 +2,7 @@
 # GOARCH, rather than running under emulation for each target. Go cross-compiles
 # natively with CGO disabled, so a multi-arch build costs one compile per arch
 # instead of one QEMU-emulated toolchain per arch.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download

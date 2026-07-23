@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Updated the Prometheus client and its Go dependency graph to patched
+  releases. This removes the reachable `golang.org/x/text` normalization
+  infinite loop (`GO-2026-5970`), the `golang.org/x/net/idna` Punycode
+  validation flaw (`GO-2026-5026`), and the outstanding Dependabot findings in
+  `golang.org/x/crypto`, `golang.org/x/net`, and protobuf.
+
 - Expired CRLs are no longer used. Expiry is checked live on every lookup, so a
   CRL past its `NextUpdate` takes the file source unhealthy and the responder
   answers `unknown` — whether it was already expired at load or expires later

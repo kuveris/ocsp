@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `source.file.expiry_grace` keeps a CRL usable for a configured duration past
   its `NextUpdate`, for CAs that publish late. Defaults to strict.
 
+### Documentation
+
+- Recorded that RFC 6960 nonces are deliberately not echoed, with the caching
+  tradeoff and the resulting replay window, in README, SECURITY.md and
+  DESIGN.md. The behaviour is unchanged; it was previously undocumented, so
+  every `openssl ocsp` user saw an unexplained warning.
+
 ### Fixed
 
 - CI now runs on pull requests, including from forks. Previously the workflow

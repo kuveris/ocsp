@@ -44,6 +44,11 @@ Things that are working as intended:
   validity window, so a cached response cannot be forged into something else.
 - **`unknown` returned when the status source fails.** This is the intended
   fail-closed behaviour, not an availability bug.
+- **Nonces are not echoed.** RFC 6960 §4.4.1 nonces are ignored by design, so
+  responses are cacheable. A captured response can therefore be replayed until
+  its `nextUpdate`; `signer.response_validity` bounds that window and should be
+  shortened if replay is part of your threat model. See DESIGN.md for the
+  reasoning.
 - **Request contents appearing in debug-level logs.** Debug logging is opt-in
   and OCSP requests are not secret.
 

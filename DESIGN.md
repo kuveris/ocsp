@@ -218,6 +218,32 @@ forge an answer. Cache eviction at `max_entries` drops an arbitrary entry rather
 than the oldest — acceptable because every entry is independently valid and a
 miss costs one source lookup.
 
+### Nonces are not echoed
+
+RFC 6960 §4.4.1 defines a nonce extension that binds a response to its request,
+preventing replay. This responder ignores it: a client that sends one gets a
+valid signed response without it, and `openssl ocsp` reports
+`WARNING: no nonce in response`.
+
+That is a deliberate position, and it is the common one — Let's Encrypt does the
+same, and the CA/Browser Forum permits it. A nonce makes every response unique,
+which defeats both the in-memory response cache and the `Cache-Control` header
+the GET handler sets. For a responder whose expected deployment is an internal
+PKI serving many repeated queries, caching is worth more than replay protection
+against an attacker who would already need to be on the network path.
+
+The cost is bounded and worth stating: without a nonce, a captured `good`
+response stays cryptographically valid until its `nextUpdate`, so it can be
+replayed for up to `signer.response_validity` — 24h in the shipped example.
+Operators who care should shorten that window.
+
+Implementing it later is not a small change. `golang.org/x/crypto/ocsp` does not
+expose request extensions at all — `ParseRequest` discards the nonce — and its
+`Response.ExtraExtensions` marshals into `singleExtensions`, whereas the nonce
+belongs in `responseExtensions`. Echoing one therefore means parsing the request
+ASN.1 by hand and assembling the response outside `CreateResponse`, which is
+security-sensitive work on the signing path rather than a flag.
+
 ### GET accepts more than the RFC requires
 
 RFC 6960 A.1.1 specifies the url-encoding of *standard* base64. That is the

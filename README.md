@@ -312,6 +312,13 @@ Requests are capped at 10 KB of DER on both methods — the POST body directly,
 the GET path at its base64-encoded equivalent. Real OCSP requests are well
 under 1 KB.
 
+**Nonces are not echoed.** A client that sends an RFC 6960 §4.4.1 nonce gets a
+valid signed response without it — `openssl ocsp` will print
+`WARNING: no nonce in response`. This is deliberate: a nonce makes every
+response unique and therefore uncacheable, which is the same tradeoff Let's
+Encrypt makes. The consequence is that a captured response can be replayed
+until its `nextUpdate`, so `signer.response_validity` bounds that window.
+
 `GET` follows RFC 6960 Appendix A.1.1 — the URL-encoding of the standard base64
 encoding of the DER request. Unpadded standard base64 and both base64url forms
 are also accepted, so a client that picks a different variant still works.

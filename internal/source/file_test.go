@@ -749,13 +749,15 @@ func TestFileSource_ExpiredCRLAtStartupFailsClosed(t *testing.T) {
 func TestFileSource_ExpiredInPlaceFailsClosed(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "inplace.crl")
-	expiresAt := time.Now().Add(800 * time.Millisecond)
-	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey, expiresAt, nil); err != nil {
+	// A generous validity window so construction — which under -race with other
+	// packages competing for CPU can be slow — cannot eat it before the
+	// "healthy while valid" check below. The reload interval is an hour, so the
+	// file is never re-read: this exercises the live expiry check, not reload.
+	const validFor = 2 * time.Second
+	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey, time.Now().Add(validFor), nil); err != nil {
 		t.Fatalf("writeCRL: %v", err)
 	}
 
-	// A long reload interval guarantees the file is never re-read during the
-	// test: this exercises the live expiry check, not the reload path.
 	s, err := NewFileSource(path, time.Hour, testIssuerCert)
 	if err != nil {
 		t.Fatalf("NewFileSource: %v", err)
@@ -765,7 +767,7 @@ func TestFileSource_ExpiredInPlaceFailsClosed(t *testing.T) {
 		t.Fatal("expected healthy while the CRL is still valid")
 	}
 
-	time.Sleep(time.Until(expiresAt) + 200*time.Millisecond)
+	time.Sleep(validFor + 300*time.Millisecond)
 
 	if s.Healthy() {
 		t.Fatal("source still healthy after its CRL expired in place; the file was never re-read")

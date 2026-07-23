@@ -107,4 +107,3 @@ func tlsMinVersion(v string) uint16 {
 	}
 	return tls.VersionTLS12
 }
-

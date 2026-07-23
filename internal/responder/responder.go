@@ -1,10 +1,10 @@
 package responder
 
 import (
-	"encoding/asn1"
 	"context"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"fmt"
 	"log/slog"

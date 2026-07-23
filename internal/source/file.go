@@ -150,7 +150,7 @@ func (s *FileSource) loadFromURL() error {
 	if err != nil {
 		return fmt.Errorf("ocsp-responder/source: downloading CRL: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ocsp-responder/source: downloading CRL: HTTP %d", resp.StatusCode)

@@ -23,15 +23,15 @@ import (
 )
 
 var (
-	testDir          string
-	issuerCertPath   string
-	ocspCertPath     string
-	ocspKeyPath      string
-	expiredCertPath  string
-	expiredKeyPath   string
-	issuerKey        *rsa.PrivateKey
-	issuerCert       *x509.Certificate
-	ocspCert         *x509.Certificate
+	testDir         string
+	issuerCertPath  string
+	ocspCertPath    string
+	ocspKeyPath     string
+	expiredCertPath string
+	expiredKeyPath  string
+	issuerKey       *rsa.PrivateKey
+	issuerCert      *x509.Certificate
+	ocspCert        *x509.Certificate
 )
 
 func TestMain(m *testing.M) {

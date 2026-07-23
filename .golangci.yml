@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # Test cleanup — deferred Close, os.RemoveAll in TestMain — has no
+      # meaningful error handling: a failure there cannot change the test's
+      # outcome and the process is exiting anyway. Enforcing errcheck on it
+      # produces noise, not safety. Production code is still checked.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

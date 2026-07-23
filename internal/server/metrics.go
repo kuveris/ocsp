@@ -1,8 +1,8 @@
 package server
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/kuveris/ocsp/internal/responder"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Metrics holds all registered Prometheus metrics for the OCSP responder.

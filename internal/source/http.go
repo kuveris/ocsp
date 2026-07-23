@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	defaultPathTemplate  = "/1.0/certificates/{serial}"
-	defaultStatusField   = "status"
+	defaultPathTemplate = "/1.0/certificates/{serial}"
+	defaultStatusField  = "status"
 )
 
 var (
@@ -220,7 +220,7 @@ func (s *HTTPSource) fetchOnce(ctx context.Context, url string) (*CertStatus, bo
 	if err != nil {
 		return nil, true, fmt.Errorf("ocsp-responder/source: http get: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusNotFound:

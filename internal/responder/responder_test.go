@@ -25,9 +25,9 @@ type fakeMetrics struct {
 }
 
 func (f *fakeMetrics) RecordRequest(method, status string, durationSeconds float64) { f.requests++ }
-func (f *fakeMetrics) RecordSourceRequest(sourceName, result string)                 { f.sourceReqs++ }
-func (f *fakeMetrics) RecordCacheHit()                                               { f.cacheHits++ }
-func (f *fakeMetrics) RecordCacheMiss()                                              { f.cacheMisses++ }
+func (f *fakeMetrics) RecordSourceRequest(sourceName, result string)                { f.sourceReqs++ }
+func (f *fakeMetrics) RecordCacheHit()                                              { f.cacheHits++ }
+func (f *fakeMetrics) RecordCacheMiss()                                             { f.cacheMisses++ }
 
 type testSigner struct {
 	issuer *x509.Certificate

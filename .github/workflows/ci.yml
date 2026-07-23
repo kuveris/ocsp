@@ -5,6 +5,11 @@ on:
     branches:
       - "**"
 
+env:
+  # Pinned deliberately: an unpinned linter turns an upstream release into a
+  # surprise red build on an unrelated commit.
+  GOLANGCI_LINT_VERSION: v2.12.2
+
 jobs:
   test:
     name: Go Unit + Integration Tests
@@ -24,6 +29,17 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Lint
+        run: golangci-lint run ./...
+
+      # Files behind the integration build tag are invisible to the default
+      # run, so they need their own pass.
+      - name: Lint (integration build tag)
+        run: golangci-lint run --build-tags=integration ./...
 
       - name: Run unit tests
         run: go test ./...

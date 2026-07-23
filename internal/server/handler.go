@@ -31,10 +31,12 @@ func ServeOCSP(r *responder.Responder, cacheTTL time.Duration, metrics *Metrics,
 		case http.MethodPost:
 			body, err := io.ReadAll(io.LimitReader(req.Body, maxOCSPRequestSize+1))
 			if err != nil {
+				logger.Debug("reading OCSP request body failed", "err", err)
 				http.Error(w, "failed to read body", http.StatusInternalServerError)
 				return
 			}
 			if len(body) > maxOCSPRequestSize {
+				logger.Debug("OCSP request exceeds size limit", "size", len(body), "limit", maxOCSPRequestSize)
 				http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -42,6 +44,7 @@ func ServeOCSP(r *responder.Responder, cacheTTL time.Duration, metrics *Metrics,
 		case http.MethodGet:
 			b, err := decodeOCSPGetRequest(req.PathValue("request"))
 			if err != nil {
+				logger.Debug("decoding OCSP GET request failed", "err", err)
 				http.Error(w, "malformed request", http.StatusBadRequest)
 				return
 			}
@@ -56,6 +59,9 @@ func ServeOCSP(r *responder.Responder, cacheTTL time.Duration, metrics *Metrics,
 		duration := time.Since(start).Seconds()
 
 		if err != nil {
+			// Debug rather than warn: request contents are attacker-controlled,
+			// so a malformed-request log line is trivially floodable.
+			logger.Debug("handling OCSP request failed", "method", method, "err", err)
 			if metrics != nil {
 				metrics.RecordRequest(method, "error", duration)
 			}

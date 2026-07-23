@@ -338,3 +338,77 @@ func TestClassifyHTTPSourceError(t *testing.T) {
 		}
 	}
 }
+
+// TestHTTPSource_HealthyBeforeFirstLookup covers the deadlock: /health gated a
+// load balancer, the source only became healthy after a successful lookup, and
+// the lookup could only arrive once the balancer added the backend.
+func TestHTTPSource_HealthyBeforeFirstLookup(t *testing.T) {
+	s, err := NewHTTPSource("https://ca.example.invalid", "", time.Second,
+		ResponseMapping{PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"ok"}},
+		1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("a freshly constructed HTTP source must report healthy; " +
+			"otherwise a health-gated deployment can never receive the request that would make it healthy")
+	}
+}
+
+// TestHTTPSource_UnhealthyAfterFailedLookup is the other half: optimism must
+// not survive contact with a broken CA.
+func TestHTTPSource_UnhealthyAfterFailedLookup(t *testing.T) {
+	s, err := NewHTTPSource("http://127.0.0.1:1", "", 200*time.Millisecond,
+		ResponseMapping{PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"ok"}},
+		1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("expected healthy before any lookup")
+	}
+
+	if _, err := s.GetStatus(context.Background(), big.NewInt(1), nil); err == nil {
+		t.Fatal("expected the lookup against a dead endpoint to fail")
+	}
+	if s.Healthy() {
+		t.Fatal("expected unhealthy after a failed lookup")
+	}
+}
+
+// TestHTTPSource_RecoversAfterSuccessfulLookup confirms health is not a
+// one-way latch.
+func TestHTTPSource_RecoversAfterSuccessfulLookup(t *testing.T) {
+	var up atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", time.Second,
+		ResponseMapping{PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"ok"}},
+		1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+
+	if _, err := s.GetStatus(context.Background(), big.NewInt(1), nil); err == nil {
+		t.Fatal("expected failure while the upstream is down")
+	}
+	if s.Healthy() {
+		t.Fatal("expected unhealthy after the failure")
+	}
+
+	up.Store(true)
+	if _, err := s.GetStatus(context.Background(), big.NewInt(2), nil); err != nil {
+		t.Fatalf("expected success once the upstream recovered: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("expected healthy again after a successful lookup")
+	}
+}

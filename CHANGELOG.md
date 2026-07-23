@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `http` status source no longer reports unhealthy until its first
+  successful lookup. It previously deadlocked any deployment gating traffic on
+  `/health`: the probe withheld the request that would have proven the source
+  works, so it never became healthy. Both sources are now healthy until a
+  failure demotes them.
 - The file source now logs why it went unhealthy. Reload failures were
   discarded, so a responder that dropped to `unknown` gave an operator a 503
   and nothing else to work from.

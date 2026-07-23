@@ -119,13 +119,26 @@ func NewHTTPSource(baseURL, rootCertFile string, timeout time.Duration, mapping 
 		retryCfg:   retryConfig{maxAttempts: maxRetries, backoff: retryBackoff},
 		cacheTTL:   cacheTTL,
 	}
+
+	// Start healthy and let the first failed lookup demote it.
+	//
+	// The zero value would mean "unhealthy until a lookup succeeds", which
+	// deadlocks any deployment that gates traffic on /health: the load balancer
+	// withholds the request that would prove the source works, so it never
+	// does. Nothing verifies the CA at construction, so the honest reading of
+	// health here is "this process is functioning" — an unreachable CA yields
+	// `unknown` answers, which is degraded but correct, and taking the instance
+	// out of rotation cannot help when every instance talks to the same CA.
+	s.healthy.Store(true)
+
 	return s, nil
 }
 
 // Name returns the source identifier.
 func (s *HTTPSource) Name() string { return "http" }
 
-// Healthy returns true if the last request succeeded.
+// Healthy reports whether the most recent lookup succeeded. It starts true;
+// see NewHTTPSource for why.
 func (s *HTTPSource) Healthy() bool { return s.healthy.Load() }
 
 func (s *HTTPSource) SetObserver(observer HTTPObserver) { s.observer = observer }

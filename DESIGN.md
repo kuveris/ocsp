@@ -245,9 +245,8 @@ GET /health
   → 200 + {"status":"ok","signer_valid":true,"signer_expires_in_days":312,
            "signer_expiry_status":"ok","source":"file","source_healthy":true}
   → 503 if the signer is invalid/expired or the source is unhealthy
-  → note: the `http` source reports unhealthy until its first successful
-    lookup, so a freshly started responder answers 503 until it serves a
-    request. The `file` source loads at startup and is unaffected.
+  → both sources start healthy and are demoted by failure, so a freshly
+    started responder does not answer 503 while waiting for its first request
 
 GET /metrics
   → Prometheus exposition format

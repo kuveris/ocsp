@@ -321,14 +321,15 @@ are also accepted, so a client that picks a different variant still works.
 ### Health
 
 `GET /health` returns `503` and `"status": "unhealthy"` when the signing
-certificate is invalid or expired, or when the status source is unhealthy.
+certificate is invalid or expired, or when the status source is unhealthy —
+a CRL that failed to load or has expired, or a CA API that stopped answering.
+Suitable as a container health check or load-balancer probe.
 
-> **Caveat with the `http` source:** it reports unhealthy until its *first
-> successful lookup*, not from startup. A freshly started responder therefore
-> answers `503` until it serves a real OCSP request. If you gate traffic on
-> this probe — a load balancer, or `depends_on: service_healthy` — it will
-> never become healthy, because the request that would make it healthy never
-> arrives. The `file` source is unaffected: it loads its CRL at startup.
+Both sources are healthy until proven otherwise, so a freshly started responder
+reports healthy without needing to serve a request first. For the `file` source
+that is settled at startup, since the CRL is loaded before the server binds; for
+the `http` source the first failed lookup demotes it, and a later success
+restores it.
 
 ### Metrics
 

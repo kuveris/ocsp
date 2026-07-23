@@ -7,6 +7,7 @@ on:
 
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
+  COVERAGE_MIN: "88"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -50,6 +51,7 @@ jobs:
         run: |
           go test -race -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out | tail -1
+          ./scripts/coverage-check.sh coverage.out "$COVERAGE_MIN"
 
   publish:
     name: Build and Publish Image

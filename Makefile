@@ -1,6 +1,7 @@
 IMAGE ?= ghcr.io/kuveris/ocsp:latest
+COVERAGE_MIN ?= 88
 
-.PHONY: build test integration-test coverage coverage-html run lint check \
+.PHONY: build test integration-test coverage coverage-check coverage-html run lint check \
         up up-d down dev image help
 
 help:
@@ -23,6 +24,10 @@ coverage: ## Print a coverage summary
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
+coverage-check: ## Fail if coverage drops below COVERAGE_MIN
+	go test -race -coverprofile=coverage.out ./...
+	./scripts/coverage-check.sh coverage.out $(COVERAGE_MIN)
+
 coverage-html: ## Open the coverage report in a browser
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out
@@ -32,10 +37,11 @@ lint: ## Vet and lint
 	golangci-lint run ./...
 	golangci-lint run --build-tags=integration ./...
 
-check: ## Full pre-commit gate: vet, lint, tests
+check: ## Full pre-commit gate: vet, lint, tests, coverage
 	$(MAKE) lint
 	$(MAKE) test
 	$(MAKE) integration-test
+	$(MAKE) coverage-check
 
 run: ## Run locally against the example config
 	go run ./cmd/ocsp-responder --config config/ocsp-responder.yaml

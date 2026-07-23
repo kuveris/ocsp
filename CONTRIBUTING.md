@@ -20,7 +20,9 @@ make check    # lint + unit + integration, all under -race
 make help     # every available target
 ```
 
-`make check` is the gate. If it fails, CI will fail too.
+`make check` is the gate — lint, unit, integration, and a coverage threshold.
+If it fails, CI will fail too, because both run the same script with the same
+number.
 
 ## Tests come first
 

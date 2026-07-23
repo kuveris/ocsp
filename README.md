@@ -346,6 +346,7 @@ make build              # build the binary
 make test               # unit tests
 make integration-test   # integration tests
 make coverage           # coverage summary
+make coverage-check     # fail if coverage drops below the threshold
 make lint               # go vet + golangci-lint
 make dev                # build locally and run via compose
 make help               # list every target

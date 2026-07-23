@@ -532,3 +532,42 @@ func TestServeOCSP_GET_RFC6960Encoding(t *testing.T) {
 		t.Fatalf("expected good, got %d", resp.Status)
 	}
 }
+
+// TestDecodeOCSPGetRequest_SizeCap pins the GET-side equivalent of the POST
+// body limit. Without it a single unauthenticated GET buys an arbitrary
+// base64 decode plus ASN.1 parse, bounded only by net/http's header limit.
+func TestDecodeOCSPGetRequest_SizeCap(t *testing.T) {
+	atLimit := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, maxOCSPRequestSize))
+	if len(atLimit) != maxOCSPGetRequestSize {
+		t.Fatalf("fixture is %d encoded bytes, cap is %d", len(atLimit), maxOCSPGetRequestSize)
+	}
+	// At the limit the input is decodable; it is not a valid OCSP request, but
+	// it must get past the size check rather than being rejected for length.
+	if _, err := decodeOCSPGetRequest(atLimit); err != nil {
+		t.Fatalf("input exactly at the cap was rejected: %v", err)
+	}
+
+	overLimit := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, maxOCSPRequestSize+64))
+	_, err := decodeOCSPGetRequest(overLimit)
+	if err == nil {
+		t.Fatal("expected an oversized GET request to be rejected")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected a size error, got %v", err)
+	}
+}
+
+// TestServeOCSP_GET_OversizedRejected checks the cap is wired into the handler
+// and answers 400 rather than doing the work.
+func TestServeOCSP_GET_OversizedRejected(t *testing.T) {
+	oversized := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 512*1024))
+	handler := ServeOCSP(nil, time.Minute, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/oversized", nil)
+	req.SetPathValue("request", oversized)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an oversized GET request, got %d", rec.Code)
+	}
+}

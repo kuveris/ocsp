@@ -103,9 +103,20 @@ var ocspGetEncodings = []*base64.Encoding{
 // decodeOCSPGetRequest decodes the path segment of an OCSP GET request. The
 // segment arrives already percent-decoded from http.ServeMux, so the '+', '/'
 // and '=' characters that standard base64 produces are present verbatim.
+// maxOCSPGetRequestSize is the encoded-length equivalent of
+// maxOCSPRequestSize. The POST branch caps the body with io.LimitReader, but a
+// GET request arrives in the URL path, where nothing bounds it below net/http's
+// 1 MB header limit — leaving room for roughly 68x the POST cap, and the
+// base64 decode plus ASN.1 parse that goes with it, on an unauthenticated
+// request.
+var maxOCSPGetRequestSize = base64.StdEncoding.EncodedLen(maxOCSPRequestSize)
+
 func decodeOCSPGetRequest(enc string) ([]byte, error) {
 	if enc == "" {
 		return nil, fmt.Errorf("ocsp-responder/server: empty OCSP GET request")
+	}
+	if len(enc) > maxOCSPGetRequestSize {
+		return nil, fmt.Errorf("ocsp-responder/server: OCSP GET request exceeds %d encoded bytes", maxOCSPGetRequestSize)
 	}
 	for _, e := range ocspGetEncodings {
 		if der, err := e.DecodeString(enc); err == nil {

@@ -9,6 +9,9 @@ server:
     min_version: "1.2"    # "1.2" | "1.3"
     acme_host: ""         # optional: hostname for automatic ACME certificate
     acme_ca_url: ""       # optional: ACME directory URL for internal CAs
+    # Where ACME certificates are persisted. Default: /var/lib/ocsp-responder/acme.
+    # Must be writable by the service user — startup fails if it is not.
+    acme_cache_dir: ""
 
 signer:
   # OCSP delegated signing certificate + key.

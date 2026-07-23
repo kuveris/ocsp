@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -139,15 +140,24 @@ func ensureACMECacheDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
 	}
-	probe := filepath.Join(dir, ".writable")
-	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY, 0o600)
+	// Probe with a unique temp name, not a fixed ".writable". Two responders
+	// pointed at the same cache dir — or a blue/green restart briefly sharing
+	// the volume — would otherwise race on the fixed name: one removes the file
+	// the other is about to remove, and a spurious startup failure results.
+	// autocert's own DirCache is safe for concurrent use, so this validator
+	// must not be the thing that isn't.
+	f, err := os.CreateTemp(dir, ".writable-*")
 	if err != nil {
 		return fmt.Errorf("ocsp-responder/server: acme cache directory %s is not writable: %w", dir, err)
 	}
+	probe := f.Name()
 	if err := f.Close(); err != nil {
+		_ = os.Remove(probe)
 		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
 	}
-	if err := os.Remove(probe); err != nil {
+	// A concurrent probe may have already removed an identically named file;
+	// treat "already gone" as success rather than a startup failure.
+	if err := os.Remove(probe); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
 	}
 	return nil

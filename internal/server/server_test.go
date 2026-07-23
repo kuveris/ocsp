@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -381,7 +382,7 @@ func TestEnsureACMECacheDir(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects an unwritable directory", func(t *testing.T) {
+	t.Run("rejects an unwritable parent (MkdirAll fails)", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root bypasses permission checks")
 		}
@@ -395,6 +396,62 @@ func TestEnsureACMECacheDir(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "acme") {
 			t.Fatalf("expected the error to identify the ACME cache, got %v", err)
+		}
+	})
+
+	// The case above fails at MkdirAll and never runs the writability probe.
+	// This one passes a directory that already EXISTS and is read-only — the
+	// shipped container's read-only /certs mount — so MkdirAll returns nil and
+	// only the probe can catch it. Without the probe this passes when it must
+	// not.
+	t.Run("rejects an existing read-only directory (probe path)", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		dir := filepath.Join(t.TempDir(), "existing-ro")
+		if err := os.Mkdir(dir, 0o500); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		err := ensureACMECacheDir(dir)
+		if err == nil {
+			t.Fatal("expected an existing read-only cache directory to be rejected by the writability probe")
+		}
+		if !strings.Contains(err.Error(), "not writable") {
+			t.Fatalf("expected a not-writable error from the probe, got %v", err)
+		}
+	})
+
+	// The probe must be safe when several instances share the cache directory,
+	// as a blue/green restart briefly does — autocert's own DirCache is. A
+	// fixed probe name would make them race on remove.
+	t.Run("concurrent probes on one directory all succeed", func(t *testing.T) {
+		dir := t.TempDir()
+		const n = 16
+		errs := make(chan error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- ensureACMECacheDir(dir)
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent probe failed: %v", err)
+			}
+		}
+		// No probe files should be left behind.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".writable") {
+				t.Fatalf("probe file left behind: %s", e.Name())
+			}
 		}
 	})
 }

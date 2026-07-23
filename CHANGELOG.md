@@ -54,7 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory, which in the container resolved inside the read-only `/certs`
   mount — autocert then fell back to in-memory and re-ordered a certificate on
   every restart. Startup now fails if the directory is not writable instead of
-  degrading silently, and the Compose stacks mount a named volume for it.
+  degrading silently, and the Compose stacks mount a named volume for it. The
+  writability probe uses a unique temp name so concurrent instances sharing the
+  cache directory do not race.
 - Added `.dockerignore`. The build context previously carried `.git`, which
   differs on every checkout and so invalidated the source-copy layer and the
   compile behind it on every CI run — making the layer cache not merely useless

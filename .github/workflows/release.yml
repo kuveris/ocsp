@@ -80,10 +80,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` is not listed explicitly: metadata-action's default
+          # flavor adds it for any non-prerelease semver tag, which is the
+          # behaviour we want. Adding it by hand both duplicated the argument
+          # and would have moved `latest` onto a future -rc tag.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6

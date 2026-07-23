@@ -536,48 +536,157 @@ func TestFileSource_ReloadDetectsBackdatedCRL(t *testing.T) {
 	}
 }
 
-// TestFileSource_ReloadIsDeterministic guards the flake in MXS-1780 directly:
-// an immediate rewrite frequently lands in the same coarse filesystem
-// timestamp tick as the previous write, so change detection must not depend on
-// mtime advancing.
-func TestFileSource_ReloadIsDeterministic(t *testing.T) {
-	for i := 0; i < 20; i++ {
-		tmpDir := t.TempDir()
-		path := filepath.Join(tmpDir, "rapid.crl")
-		if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
-			t.Fatalf("writeCRL: %v", err)
-		}
-		s, err := NewFileSource(path, 10*time.Millisecond, testIssuerCert)
-		if err != nil {
-			t.Fatalf("NewFileSource: %v", err)
-		}
+// TestFileSource_ReloadSurvivesIdenticalMtime pins the coarse-timestamp half
+// of the change-detection contract. The replacement CRL is forced to carry the
+// *same* mtime as the one already loaded, which is what a rapid rewrite looks
+// like on a filesystem whose timestamp granularity is coarser than the gap
+// between the two writes.
+//
+// Forcing the timestamp rather than racing the clock matters: on a filesystem
+// with nanosecond mtime granularity an immediate rewrite gets a strictly newer
+// mtime, so a timing-based version of this test passes even against a
+// mtime-comparing implementation and guards nothing.
+func TestFileSource_ReloadSurvivesIdenticalMtime(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "sametime.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	original := info.ModTime()
 
-		// Rewrite immediately, with no intervening work to push the write into
-		// a later tick.
-		if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
-			SerialNumber:   big.NewInt(7),
-			RevocationTime: time.Now(),
-		}}); err != nil {
-			s.Stop()
-			t.Fatalf("writeCRL: %v", err)
-		}
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
 
-		deadline := time.Now().Add(2 * time.Second)
-		reloaded := false
-		for !reloaded {
-			cs, err := s.GetStatus(context.Background(), big.NewInt(7), testIssuerCert)
-			if err == nil && cs.Status == StatusRevoked {
-				reloaded = true
-				break
-			}
-			if time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
+		SerialNumber:   big.NewInt(7),
+		RevocationTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	// Pin the replacement to the original timestamp. An implementation that
+	// compares modification times cannot see this change at all.
+	if err := os.Chtimes(path, original, original); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		cs, err := s.GetStatus(context.Background(), big.NewInt(7), testIssuerCert)
+		if err == nil && cs.Status == StatusRevoked {
+			return
 		}
-		s.Stop()
-		if !reloaded {
-			t.Fatalf("iteration %d: rewrite was never reloaded", i)
+		if time.Now().After(deadline) {
+			t.Fatal("CRL with an identical mtime was never reloaded")
 		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestFileSource_RecoversAfterTransientReadError covers a regression: change
+// detection short-circuits on an unchanged digest, but the parse it skips is
+// the only thing that sets loaded=true. A momentary read failure followed by
+// the *identical* CRL returning must still re-arm the source, or a blip
+// becomes a permanent outage that only a restart clears.
+func TestFileSource_RecoversAfterTransientReadError(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "transient.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
+		SerialNumber:   big.NewInt(42),
+		RevocationTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+	if !s.Healthy() {
+		t.Fatal("expected healthy after load")
+	}
+
+	// Remove the file so a reload tick fails, then restore byte-identical
+	// content — exactly what a non-atomic publish or an NFS blip looks like.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for s.Healthy() {
+		if time.Now().After(deadline) {
+			t.Fatal("source never went unhealthy after the file was removed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for !s.Healthy() {
+		if time.Now().After(deadline) {
+			t.Fatal("source stuck unhealthy after the identical CRL was restored")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if cs, err := s.GetStatus(context.Background(), big.NewInt(42), testIssuerCert); err != nil || cs.Status != StatusRevoked {
+		t.Fatalf("expected revoked after recovery, got %v err=%v", cs.Status, err)
+	}
+}
+
+// TestFileSource_RecoversAfterCorruptThenRollback is the operator-facing shape
+// of the same defect: a bad CRL is published, then rolled back to the version
+// that was already loaded.
+func TestFileSource_RecoversAfterCorruptThenRollback(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "rollback.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	if err := os.WriteFile(path, []byte("not a CRL"), 0o600); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for s.Healthy() {
+		if time.Now().After(deadline) {
+			t.Fatal("source never went unhealthy on a corrupt CRL")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := os.WriteFile(path, good, 0o600); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if s.Healthy() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("source stuck unhealthy after rollback to the previously-loaded CRL")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

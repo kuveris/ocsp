@@ -191,7 +191,14 @@ func (s *FileSource) reloadFromDiskIfChanged() error {
 	s.lastHashMu.RLock()
 	unchanged := sum == s.lastHash
 	s.lastHashMu.RUnlock()
-	if unchanged {
+
+	// Skip the re-parse only when the contents are unchanged *and* the source
+	// is currently serving. parseCRLBytes is the only thing that sets loaded
+	// back to true, so short-circuiting on the digest alone would make a
+	// transient read failure permanent: the identical CRL returning to disk
+	// would match lastHash, skip the parse, and leave the source unhealthy
+	// until the process restarted.
+	if unchanged && s.loaded.Load() {
 		return nil
 	}
 

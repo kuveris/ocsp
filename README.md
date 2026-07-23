@@ -1,109 +1,212 @@
 # ocsp-responder
 
-A standalone, CA-agnostic OCSP Responder (RFC 6960) written in Go.
+[![CI](https://github.com/kuveris/ocsp/actions/workflows/ci.yml/badge.svg)](https://github.com/kuveris/ocsp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
 
-## Features
+A small, CA-agnostic OCSP responder ([RFC 6960](https://www.rfc-editor.org/rfc/rfc6960)) written in Go.
 
-- File-backed CRL source with hot-reload (PEM and DER), including HTTP(S) CRL URLs
-- HTTP source for CA REST APIs (configurable response mapping)
-- Static source for testing
-- In-memory response cache (configurable TTL and max entries)
-- Prometheus metrics at `/metrics`
-- TLS support (manual cert or automatic via ACME)
-- Graceful shutdown on SIGTERM/SIGINT
-- Structured JSON logging
+Point it at a CRL file, a URL, or a CA's REST API, give it a delegated signing
+certificate, and it answers OCSP queries about your certificates. It ships as a
+single static binary or a 24 MB container image, with no database and no runtime
+dependencies.
 
-## Quick Start
+## What it is
+
+- A **standalone OCSP responder** you run next to an existing CA
+- **CA-agnostic** — it reads revocation state from a CRL or an HTTP API, so it
+  doesn't care which software issued your certificates
+- **Read-only** — it answers status queries and nothing else
+
+## What it is not
+
+- Not a CA — it does not issue certificates
+- Not a certificate manager
+- Not a revocation tool — revoking happens in your CA; this service only reports
+  what the CA already decided
+
+## Should you use this?
+
+Probably worth being upfront: if you need a battle-tested OCSP responder for a
+public PKI, use [Boulder](https://github.com/letsencrypt/boulder) (what Let's
+Encrypt runs) or [OpenXPKI](https://www.openxpki.org/). They have years of
+production exposure that this does not.
+
+This project is aimed at a narrower case: an internal or homelab PKI where you
+already have a CA that emits a CRL, you want OCSP without deploying a full PKI
+suite, and you'd like the whole thing to be a config file and one binary. If
+that's you, it should be a comfortable fit. If you're securing something that
+matters to the public internet, reach for the established options.
+
+## Quick start
 
 ### Docker Compose
 
-```yaml
-# docker-compose.yaml
-version: "3.9"
-services:
-  ocsp-responder:
-    image: ocsp-responder:latest
-    build: .
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./certs:/certs:ro
-      - ./config:/etc/ocsp-responder:ro
-    command: ["--config", "/etc/ocsp-responder/ocsp-responder.yaml"]
+The repository ships a [`docker-compose.yaml`](docker-compose.yaml):
+
+```bash
+git clone https://github.com/kuveris/ocsp.git
+cd ocsp
+# place your certificates in ./certs and edit ./config/ocsp-responder.yaml
+docker compose up
 ```
 
 ### Binary
+
+```bash
+go install github.com/kuveris/ocsp/cmd/ocsp-responder@latest
+ocsp-responder --config /etc/ocsp-responder/ocsp-responder.yaml
+```
+
+Or build from source:
 
 ```bash
 make build
 ./ocsp-responder --config config/ocsp-responder.yaml
 ```
 
-### Test the responder
+For a long-running install, see the unit file in
+[`examples/systemd/`](examples/systemd/).
+
+### Check it works
 
 ```bash
-# Health check
 curl http://localhost:8080/health
-
-# Prometheus metrics
-curl http://localhost:8080/metrics
 ```
+
+```json
+{
+  "status": "ok",
+  "signer_valid": true,
+  "signer_expires_in_days": 312,
+  "signer_expiry_status": "ok",
+  "source": "file",
+  "source_healthy": true
+}
+```
+
+Then query a real certificate with OpenSSL:
+
+```bash
+openssl ocsp -issuer intermediate-ca.crt -cert client.crt \
+  -url http://localhost:8080 -resp_text
+```
+
+## Certificates you need
+
+Three files, and the responder validates all of them at startup — it refuses to
+boot on a misconfiguration rather than serving bad answers.
+
+| File | Requirement |
+|---|---|
+| `signer.cert_file` | Must carry `extendedKeyUsage = OCSPSigning`, and must be signed by the issuer below |
+| `signer.key_file` | The matching private key (PKCS#8 or PKCS#1, RSA or ECDSA) |
+| `signer.issuer_cert_file` | The CA that issued the certificates you're answering for. Must be a CA certificate with the `keyCertSign` key usage |
+
+The signing certificate is a **delegated responder**: the issuing CA signs it,
+so clients trust its answers without the CA's own key ever touching this
+service.
+
+Generating one with OpenSSL — first an extensions file:
+
+```ini
+# ocsp-signer.cnf
+[ ocsp_signer ]
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, OCSPSigning
+```
+
+Then issue it from your intermediate CA:
+
+```bash
+openssl req -newkey rsa:3072 -nodes \
+  -keyout certs/ocsp-signer.key \
+  -out certs/ocsp-signer.csr \
+  -subj "/CN=OCSP Responder"
+
+openssl x509 -req -in certs/ocsp-signer.csr \
+  -CA certs/intermediate-ca.crt -CAkey certs/intermediate-ca.key \
+  -CAcreateserial -days 365 \
+  -extfile ocsp-signer.cnf -extensions ocsp_signer \
+  -out certs/ocsp-signer.crt
+```
+
+With `step-ca`, the equivalent is a certificate issued from a provisioner
+configured for OCSP signing.
 
 ## Configuration
 
-See [`config/ocsp-responder.yaml`](config/ocsp-responder.yaml) for a fully annotated example.
+A fully annotated example lives at
+[`config/ocsp-responder.yaml`](config/ocsp-responder.yaml).
 
-### Key fields
+| Field | If omitted | Description |
+|---|---|---|
+| `server.listen_addr` | `:80` | Address to listen on. The example config uses `0.0.0.0:8080` |
+| `server.tls.enabled` | `false` | Serve OCSP over HTTPS |
+| `server.tls.cert_file` / `key_file` | — | Manual TLS certificate and key |
+| `server.tls.min_version` | `1.2` | Minimum TLS version — `1.3` selects TLS 1.3, anything else is 1.2 |
+| `server.tls.acme_host` | — | Hostname for an automatic ACME certificate |
+| `server.tls.acme_ca_url` | — | ACME directory URL, for internal CAs |
+| `signer.cert_file` | **required** | OCSP delegated signing certificate |
+| `signer.key_file` | **required** | Signing private key |
+| `signer.issuer_cert_file` | **required** | Issuer of the certificates being checked |
+| `signer.response_validity` | **required** | Response validity window, sets `nextUpdate` (e.g. `24h`) |
+| `source.type` | **required** | `file`, `http`, or `static` |
+| `cache.enabled` | `false` | In-memory response cache. The example config enables it |
+| `cache.ttl` | **required** | Cache entry lifetime (e.g. `1h`) — validated even when the cache is disabled |
+| `cache.max_entries` | `0` (cache inert) | Cache size cap. `0` silently disables caching |
+| `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
+| `logging.format` | `text` | `json` selects JSON; any other value is text |
 
-| Field | Description |
-|---|---|
-| `server.listen_addr` | Address to listen on (default: `0.0.0.0:8080`) |
-| `server.tls.enabled` | Enable TLS |
-| `server.tls.cert_file` / `key_file` | Manual TLS certificate and key |
-| `server.tls.acme_host` | Hostname for automatic ACME certificate |
-| `server.tls.acme_ca_url` | ACME directory URL for internal CAs |
-| `signer.cert_file` | OCSP delegated signing certificate (must have `extKeyUsage OCSPSigning`) |
-| `signer.key_file` | OCSP signing private key |
-| `signer.issuer_cert_file` | Issuer certificate of the end-entity certificates |
-| `signer.response_validity` | OCSP response validity window (e.g. `24h`) |
-| `source.type` | Status source: `file`, `http`, or `static` |
-| `cache.enabled` | Enable in-memory response cache |
-| `cache.ttl` | Cache TTL (e.g. `1h`) |
-| `cache.max_entries` | Maximum number of cached responses |
-| `logging.level` | Log level: `debug`, `info`, `warn`, `error` |
-| `logging.format` | Log format: `json` or `text` |
+Config is validated on load and the process exits on anything invalid, so a
+typo surfaces at startup rather than in production.
 
-## Status Sources
+Two of these are easy to trip over: leaving `listen_addr` unset binds port 80
+rather than 8080, and the cache is off unless you set both `cache.enabled: true`
+and a non-zero `cache.max_entries`. Starting from the shipped example config
+avoids both.
 
-### File Source
+OCSP is served over plain HTTP by design — responses are signed, so the
+transport doesn't need to be confidential. TLS is available if you want it, but
+it is not what makes the answers trustworthy.
 
-Reads a CRL file (PEM or DER) and uses it to determine revocation status.
-Supports hot-reload when the file changes.
-`crl_path` may also be an HTTP(S) URL — the CRL will be downloaded and refreshed
-at the configured `reload_interval`.
+## Status sources
+
+### `file` — CRL on disk or over HTTP
+
+Reads a CRL in PEM or DER (auto-detected) and answers from its revocation
+entries. Reloads automatically when the file changes.
 
 ```yaml
 source:
   type: "file"
   file:
-    crl_path: "certs/ca.crl"        # local file or HTTP(S) URL
+    crl_path: "certs/ca.crl"    # local path or an http(s):// URL
     reload_interval: "5m"
 ```
 
-### HTTP Source
+`crl_path` also accepts an HTTP(S) URL, in which case the CRL is downloaded and
+refreshed on every `reload_interval`.
 
-Queries a CA REST API for certificate status. The response mapping is fully
-configurable so any CA API can be supported without code changes.
+The CRL's signature is verified against `signer.issuer_cert_file` before any of
+its entries are trusted, so a swapped or corrupted CRL is rejected instead of
+being served.
+
+### `http` — a CA's REST API
+
+Queries your CA directly. The response mapping is configuration, not code, so
+most CA APIs can be supported without patching anything.
 
 ```yaml
 source:
   type: "http"
   http:
     base_url: "https://ca.example.local:9000"
-    root_cert_file: "certs/root-ca.crt"   # optional: TLS pinning
+    root_cert_file: "certs/root-ca.crt"   # optional: pin the CA's TLS root
     timeout: "10s"
-    retry_max: 3
-    retry_backoff: "500ms"
+    retry_max: 3                          # default 3
+    retry_backoff: "500ms"                # default 500ms
     cache_ttl: "5m"
     response_mapping:
       path_template: "/1.0/certificates/{serial}"
@@ -112,29 +215,31 @@ source:
       revoked_values: ["revoked", "suspended"]
 ```
 
-### Static Source
+`{serial}` is replaced with the certificate serial from the OCSP request.
+Anything not matching `good_values` or `revoked_values` becomes `unknown`.
 
-Returns a hardcoded status for all certificates. Useful for testing.
+### `static` — fixed answer
+
+Returns the same status for every certificate. For testing only.
 
 ```yaml
 source:
   type: "static"
   static:
-    status: "good"   # "good" | "revoked" | "unknown"
+    status: "good"   # good | revoked | unknown
 ```
 
-## Supported CAs
+## CA integration
 
 ### step-ca
 
+Export the CRL and use the `file` source:
+
 ```bash
-# Export CRL from step-ca
 step ca crl --out certs/ca.crl
 ```
 
-Use `source.type: "file"` with `file.crl_path: "certs/ca.crl"`.
-
-Alternatively, use `source.type: "http"` with the step-ca certificate API:
+Or query the certificate API directly with the `http` source:
 
 ```yaml
 source:
@@ -151,74 +256,97 @@ source:
 ### OpenSSL CA
 
 ```bash
-# Generate CRL (PEM)
 openssl ca -gencrl -out certs/ca.crl.pem -config openssl.cnf
-
-# Or as DER
-openssl crl -in certs/ca.crl.pem -outform DER -out certs/ca.crl
 ```
 
-Use `source.type: "file"` — both PEM and DER are auto-detected.
+Use the `file` source — PEM and DER are both accepted.
 
-### Generic HTTP API
+### Anything else
 
-Any CA with an HTTP API that returns certificate status can be used with the
-`http` source and a custom `response_mapping`.
+Any CA that exposes certificate status over HTTP works with the `http` source
+and a suitable `response_mapping`. Any CA that publishes a CRL works with the
+`file` source. Between the two, most setups are covered.
 
-## Security Notes
-
-- **Private key** — the OCSP signing key is never logged, even at `DEBUG` level
-- **`certs/`** is listed in `.gitignore` — never commit certificate files
-- **Key permissions** — set signing key to `chmod 600`, owned by the service user
-- **StatusUnknown on errors** — the responder never returns `StatusGood` as a
-  fallback; it always returns `StatusUnknown` when the status source fails
-- **Signed responses** — OCSP responses are cryptographically signed; in-memory
-  caching is safe and recommended
-- **Request size limit** — request bodies are limited to 10 KB (OCSP requests are
-  typically under 1 KB)
-- **Issuer binding checks** — incoming OCSP requests are validated against the configured
-  issuer certificate hash bindings before status lookup
-- **CRL trust checks** — file/URL CRLs are validated against the configured issuer before
-  revocation entries are used
-
-## HTTP Endpoints
+## HTTP endpoints
 
 | Endpoint | Description |
 |---|---|
-| `POST /` | DER-encoded OCSP request body → signed OCSP response |
-| `GET /{base64url}` | Base64url-encoded OCSP request (RFC 6960 Section 5) |
-| `GET /health` | Health check — returns 200 OK or 503 if unhealthy |
+| `POST /` | DER-encoded OCSP request in the body → signed OCSP response |
+| `GET /{encoded}` | OCSP request encoded in the path (see note below) |
+| `GET /health` | Health check — `200` when healthy, `503` when not |
 | `GET /metrics` | Prometheus metrics |
 
-## Prometheus Metrics
+Request bodies are capped at 10 KB; real OCSP requests are well under 1 KB.
+
+> **Note on `GET`:** the path segment is currently decoded as *unpadded
+> base64url* (`-`/`_`, no `=`). RFC 6960 specifies URL-encoded **standard**
+> base64 (`+`/`/`, with padding), which is what OpenSSL and browsers send. If
+> you are integrating a standards-compliant client over `GET`, use `POST`
+> until this is corrected.
+
+## Observability
+
+### Health
+
+`GET /health` returns `503` and `"status": "unhealthy"` when the signing
+certificate is invalid or expired, or when the status source is unhealthy — a
+CRL that failed to load, or a CA API that isn't answering. Suitable as a
+container health check or load-balancer probe.
+
+### Metrics
 
 | Metric | Type | Description |
 |---|---|---|
-| `ocsp_requests_total{method,status}` | Counter | Total OCSP requests processed |
+| `ocsp_requests_total{method,status}` | Counter | OCSP requests processed |
 | `ocsp_request_duration_seconds{method}` | Histogram | Request processing time |
-| `ocsp_cache_entries` | Gauge | Current number of cached responses |
+| `ocsp_cache_entries` | Gauge | Responses currently cached |
 | `ocsp_cache_hits_total` | Counter | Cache hits |
 | `ocsp_cache_misses_total` | Counter | Cache misses |
 | `ocsp_signer_days_until_expiry` | Gauge | Days until the signing certificate expires |
 | `ocsp_source_requests_total{source,result}` | Counter | Requests to the status source |
-| `ocsp_source_request_duration_seconds{source}` | Histogram | Source request latency |
-| `ocsp_source_retries_total{source}` | Counter | Source retries |
-| `ocsp_source_errors_total{source,class}` | Counter | Source error classes |
+| `ocsp_source_request_duration_seconds{source}` | Histogram | Status source latency |
+| `ocsp_source_retries_total{source}` | Counter | Status source retries |
+| `ocsp_source_errors_total{source,class}` | Counter | Status source errors by class |
 
-## Building
+`ocsp_signer_days_until_expiry` is the one worth alerting on. The responder
+classifies it internally as OK above 30 days, warning at 8–30, and critical
+below 8 — an expired signing certificate takes the whole service down, and it
+is an easy thing to forget about for a year.
+
+## Security notes
+
+- **Fails closed.** When the status source errors, the responder returns
+  `unknown` — never `good`. A broken CRL feed cannot silently vouch for a
+  revoked certificate.
+- **Issuer binding is enforced.** Incoming requests are checked against the
+  configured issuer's name and key hashes before any lookup happens, so the
+  responder won't answer for a CA it isn't configured to speak for.
+- **CRLs are verified.** A CRL is checked against the configured issuer before
+  its entries are used.
+- **The signing key is never logged**, at any log level.
+- **Startup validation.** Missing EKU, a signer not issued by the configured
+  issuer, a non-CA issuer, or a key that doesn't match the certificate are all
+  startup failures rather than runtime surprises.
+- **Runs as non-root** in the container image, as uid 100.
+- **Caching is safe.** OCSP responses are signed and carry their own validity
+  window, so caching them cannot forge an answer. Note that eviction at
+  `max_entries` drops an arbitrary entry, not the oldest or least-used.
+- **Key permissions** are your responsibility: `chmod 600`, owned by the service
+  user. `certs/` is gitignored — don't commit key material.
+
+## Development
 
 ```bash
-make build    # build binary
-make test     # run unit tests
-make lint     # run go vet
+make build              # build the binary
+make test               # unit tests
+make integration-test   # integration tests
+make coverage           # coverage summary
+make coverage-html      # coverage report in a browser
+make lint               # go vet
 ```
 
-### Integration tests
-
-```bash
-go test -tags integration ./...
-```
+Requires Go 1.25 or newer.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).

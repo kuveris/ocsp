@@ -328,7 +328,7 @@ status API works with the `http` source and a suitable response mapping.
 
 ## 11. Testing
 
-Roughly 146 tests across six packages, plus an end-to-end suite behind the
+Roughly 158 tests across six packages, plus an end-to-end suite behind the
 `integration` build tag.
 
 | Package | Focus |

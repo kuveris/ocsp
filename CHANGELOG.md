@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an omitted value reached Go's HTTP server as an empty address, which binds
   the privileged port 80 — neither documented nor intended.
 
+### Changed
+
+- Test coverage raised from 79.7% to 89.2%. `internal/config`,
+  `internal/responder` and `internal/server` are now at 100%; `server.Start`
+  went from 8.8% to full coverage, including the TLS, ACME, misconfiguration
+  and listen-failure paths.
+
 ## [0.1.0] — 2026-07-23
 
 First public release. Pre-1.0: the configuration format may still change, and

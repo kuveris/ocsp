@@ -43,6 +43,7 @@ Both of these come from real defects that shipped:
 
 ## Known gaps
 
-- Coverage is 79.7%, just under the 80% target. The shortfall is
-  `server.Start` — listener/TLS/ACME wiring. Tracked in MXS-576.
+- Coverage is 89.2%. The only package below target is `cmd/ocsp-responder`
+  (48.6%), and the remainder there is `main()` itself — flag parsing, wiring,
+  `os.Exit` — which rule 17 permits excluding.
 - Never run against a production PKI. Treat behaviour claims accordingly.

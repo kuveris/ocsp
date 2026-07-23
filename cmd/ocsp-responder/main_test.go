@@ -90,8 +90,12 @@ func TestNewSource_File(t *testing.T) {
 	}
 }
 
+// TestNewSource_FileWithExpiryGrace verifies the grace actually reaches the
+// source, not just that construction succeeds. It points at an *already
+// expired* CRL with a grace wide enough to cover the overrun: if newSource
+// dropped the grace, the source would be unhealthy and this fails.
 func TestNewSource_FileWithExpiryGrace(t *testing.T) {
-	issuerCert, crlPath := writeTestCRL(t)
+	issuerCert, crlPath := writeExpiredTestCRL(t, 30*time.Second)
 	cfg := &config.Config{Source: config.SourceConfig{
 		Type: "file",
 		File: config.FileSourceConfig{CRLPath: crlPath, ReloadInterval: "1m", ExpiryGrace: "10m"},
@@ -101,18 +105,28 @@ func TestNewSource_FileWithExpiryGrace(t *testing.T) {
 		t.Fatalf("newSource: %v", err)
 	}
 	if closer, ok := src.(interface{ Stop() }); ok {
-		closer.Stop()
+		defer closer.Stop()
+	}
+	if !src.Healthy() {
+		t.Fatal("expected healthy: the 10m grace covers a 30s overrun, so it must have reached the source")
 	}
 }
 
+// TestNewSource_FileBadExpiryGrace passes a VALID issuer so the only possible
+// error is the bad grace string — otherwise a nil-issuer error would satisfy
+// the test regardless of whether the grace is parsed at all.
 func TestNewSource_FileBadExpiryGrace(t *testing.T) {
-	_, crlPath := writeTestCRL(t)
+	issuerCert, crlPath := writeTestCRL(t)
 	cfg := &config.Config{Source: config.SourceConfig{
 		Type: "file",
 		File: config.FileSourceConfig{CRLPath: crlPath, ReloadInterval: "1m", ExpiryGrace: "whenever"},
 	}}
-	if _, err := newSource(cfg, nil, nil); err == nil {
+	_, err := newSource(cfg, issuerCert, nil)
+	if err == nil {
 		t.Fatal("expected an error for an unparseable expiry grace")
+	}
+	if !strings.Contains(err.Error(), "expiry grace") {
+		t.Fatalf("expected the error to name the expiry grace, got %v", err)
 	}
 }
 
@@ -202,6 +216,17 @@ func TestNewSource_Errors(t *testing.T) {
 // writeTestCRL builds a throwaway CA and an empty CRL signed by it.
 func writeTestCRL(t *testing.T) (*x509.Certificate, string) {
 	t.Helper()
+	return writeCRLExpiring(t, time.Now().Add(time.Hour))
+}
+
+// writeExpiredTestCRL writes a CRL that expired `overrun` ago.
+func writeExpiredTestCRL(t *testing.T, overrun time.Duration) (*x509.Certificate, string) {
+	t.Helper()
+	return writeCRLExpiring(t, time.Now().Add(-overrun))
+}
+
+func writeCRLExpiring(t *testing.T, nextUpdate time.Time) (*x509.Certificate, string) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
@@ -226,8 +251,8 @@ func writeTestCRL(t *testing.T) (*x509.Certificate, string) {
 
 	crlDER, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
 		Number:     big.NewInt(1),
-		ThisUpdate: time.Now().Add(-time.Minute),
-		NextUpdate: time.Now().Add(time.Hour),
+		ThisUpdate: nextUpdate.Add(-time.Hour),
+		NextUpdate: nextUpdate,
 	}, cert, key)
 	if err != nil {
 		t.Fatalf("create CRL: %v", err)

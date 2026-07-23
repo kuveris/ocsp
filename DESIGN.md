@@ -195,14 +195,18 @@ was not configured for is answering questions it has no authority over.
 A CRL is checked for issuer match and signature validity before its entries are
 trusted, so a swapped or corrupted CRL is rejected rather than served.
 
-It is also checked against its own `NextUpdate`. Content-hash change detection
-answers "did the file change", which is the wrong question when a publisher
-stalls: the file stays byte-identical and perfectly valid, while the data inside
-it silently goes obsolete. Without an expiry check the responder would keep
-answering `good` for certificates revoked since the last publication, forever,
-with nothing in the logs or `/health` to show for it. Expiry is refused by
-default; `expiry_grace` exists because a strict boundary turns a late-publishing
-CA into an outage, and that tradeoff belongs to the operator.
+It is also checked against its own `NextUpdate`, and this is done **live on
+every lookup**, not once at load. Content-hash change detection answers "did the
+file change", which is the wrong question when a publisher stalls: the file
+stays byte-identical and perfectly valid, while the data inside it silently goes
+obsolete. A load-time-only expiry check misses exactly this — the file never
+changes, so it is never re-checked — so `crlExpired` is evaluated in `Healthy`
+and `GetStatus` on every call. An expired CRL is treated as unhealthy (answers
+`unknown`), never refused at parse time: that makes an already-expired CRL at
+startup a transient condition the responder recovers from rather than a fatal
+error that turns a publication delay into a crash loop. `expiry_grace` exists
+because a strict boundary turns a late-publishing CA into an outage, and that
+tradeoff belongs to the operator.
 
 ### Validation happens at startup
 

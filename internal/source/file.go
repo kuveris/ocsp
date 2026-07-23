@@ -29,9 +29,14 @@ type FileSource struct {
 	issuerCert     *x509.Certificate
 	isURL          bool
 
-	mu      sync.RWMutex
-	revoked map[string]pkix.RevokedCertificate
-	loaded  atomic.Bool
+	mu         sync.RWMutex
+	revoked    map[string]pkix.RevokedCertificate
+	nextUpdate time.Time // under mu; zero means the CRL carries no expiry
+	loaded     atomic.Bool
+
+	// expiredLogged tracks whether the current expiry has already been logged,
+	// so the reload loop reports the transition once rather than every tick.
+	expiredLogged atomic.Bool
 
 	// lastHash is the SHA-256 digest of the CRL bytes currently loaded.
 	//
@@ -101,6 +106,12 @@ func NewFileSource(crlPath string, reloadInterval time.Duration, issuerCert *x50
 	if err := s.loadCRL(); err != nil {
 		return nil, err
 	}
+	// An already-expired CRL is not a startup failure: it is a transient runtime
+	// condition the source fails closed on (answering `unknown`) and recovers
+	// from when the CA publishes. Making it fatal would turn a routine
+	// publication delay into a crash loop, since restarting is the operator's
+	// first instinct when /health goes 503. Log it now so the cause is visible.
+	s.checkExpiry()
 	go s.reloadLoop()
 	return s, nil
 }
@@ -112,13 +123,34 @@ func (s *FileSource) Stop() {
 
 func (s *FileSource) Name() string { return "file" }
 
-func (s *FileSource) Healthy() bool { return s.loaded.Load() }
+func (s *FileSource) Healthy() bool { return s.loaded.Load() && !s.crlExpired() }
+
+// crlExpired reports whether the loaded CRL is past its NextUpdate (plus any
+// configured grace). It is evaluated live on every status lookup and health
+// check rather than once at load: a CRL that is valid when read expires in
+// place while the file on disk never changes, so a load-time-only check keeps
+// serving superseded revocation data indefinitely — reporting `good` for a
+// certificate revoked since the last publication.
+func (s *FileSource) crlExpired() bool {
+	s.mu.RLock()
+	nu := s.nextUpdate
+	s.mu.RUnlock()
+	if nu.IsZero() {
+		return false
+	}
+	return time.Now().After(nu.Add(s.expiryGrace))
+}
 
 func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if !s.loaded.Load() {
+		return nil, ErrSourceUnhealthy
+	}
+	// Fail closed on an expired CRL. Checked here, not only in the reload loop,
+	// so there is no window between a CRL expiring and the next reload tick.
+	if s.crlExpired() {
 		return nil, ErrSourceUnhealthy
 	}
 	if issuer == nil {
@@ -167,13 +199,47 @@ func (s *FileSource) reloadLoop() {
 			if s.isURL {
 				if err := s.loadFromURL(); err != nil {
 					s.markUnhealthy(err)
+				} else {
+					s.checkExpiry()
 				}
 				continue
 			}
 			if err := s.reloadFromDiskIfChanged(); err != nil {
 				s.markUnhealthy(err)
+				continue
 			}
+			// The file may be unchanged but the loaded CRL expired in place.
+			s.checkExpiry()
 		}
+	}
+}
+
+// log returns the configured logger, defaulting when a FileSource was built as
+// a bare struct literal (as some tests do) without going through NewFileSource.
+func (s *FileSource) log() *slog.Logger {
+	if s.logger == nil {
+		return slog.Default()
+	}
+	return s.logger
+}
+
+// checkExpiry logs the transition into and out of CRL expiry exactly once each
+// way. Going unhealthy silently is the same class of problem this guards
+// against: the responder degrades to `unknown` and an operator seeing /health
+// flip to 503 has nothing to explain it.
+func (s *FileSource) checkExpiry() {
+	if s.crlExpired() {
+		if !s.expiredLogged.Swap(true) {
+			s.mu.RLock()
+			nu := s.nextUpdate
+			s.mu.RUnlock()
+			s.log().Error("CRL expired; answering unknown until a fresh CRL is published",
+				"path", s.crlPath, "next_update", nu.UTC().Format(time.RFC3339), "grace", s.expiryGrace)
+		}
+		return
+	}
+	if s.expiredLogged.Swap(false) {
+		s.log().Info("CRL is current again", "path", s.crlPath)
 	}
 }
 
@@ -184,11 +250,11 @@ func (s *FileSource) reloadLoop() {
 func (s *FileSource) markUnhealthy(err error) {
 	wasHealthy := s.loaded.Swap(false)
 	if wasHealthy {
-		s.logger.Error("CRL source is unhealthy; answering unknown", "path", s.crlPath, "err", err)
+		s.log().Error("CRL source is unhealthy; answering unknown", "path", s.crlPath, "err", err)
 		return
 	}
 	// Already unhealthy — log at debug so a persistent failure does not flood.
-	s.logger.Debug("CRL source still unhealthy", "path", s.crlPath, "err", err)
+	s.log().Debug("CRL source still unhealthy", "path", s.crlPath, "err", err)
 }
 
 // loadCRL dispatches to loadFromURL or loadFromDisk based on the path type.
@@ -293,9 +359,6 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	if err := verifyCRLForIssuer(rl, s.issuerCert); err != nil {
 		return err
 	}
-	if err := s.verifyCRLNotExpired(rl); err != nil {
-		return err
-	}
 
 	revoked := make(map[string]pkix.RevokedCertificate, len(rl.RevokedCertificateEntries))
 	for _, rc := range rl.RevokedCertificateEntries {
@@ -306,35 +369,16 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 		}
 	}
 
+	// NextUpdate is stored, not enforced here: expiry is a live property checked
+	// on every lookup (see crlExpired), because a CRL valid at load can expire
+	// in place while its bytes never change. NextUpdate is optional per RFC 5280;
+	// a zero value means no expiry to enforce.
 	s.mu.Lock()
 	s.revoked = revoked
+	s.nextUpdate = rl.NextUpdate
 	s.mu.Unlock()
 
 	s.loaded.Store(true)
-	return nil
-}
-
-// verifyCRLNotExpired rejects a CRL the CA has already superseded.
-//
-// Without this the responder keeps answering from the last CRL it managed to
-// read. Nothing else notices: content-hash change detection sees no change
-// because the file never changes, and /health stays green — so a certificate
-// revoked after the last successful publication is reported `good`
-// indefinitely. NextUpdate is optional per RFC 5280; a CRL without one carries
-// no expiry to enforce.
-func (s *FileSource) verifyCRLNotExpired(rl *x509.RevocationList) error {
-	if rl.NextUpdate.IsZero() {
-		return nil
-	}
-	deadline := rl.NextUpdate.Add(s.expiryGrace)
-	if time.Now().After(deadline) {
-		if s.expiryGrace > 0 {
-			return fmt.Errorf("ocsp-responder/source: CRL expired at %s (grace %s)",
-				rl.NextUpdate.UTC().Format(time.RFC3339), s.expiryGrace)
-		}
-		return fmt.Errorf("ocsp-responder/source: CRL expired at %s",
-			rl.NextUpdate.UTC().Format(time.RFC3339))
-	}
 	return nil
 }
 

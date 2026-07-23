@@ -712,26 +712,66 @@ func writeCRLWithNextUpdate(path string, issuer *x509.Certificate, issuerKey *rs
 	return os.WriteFile(path, der, 0o600)
 }
 
-// TestFileSource_RejectsExpiredCRL covers the core invariant: a CRL past its
-// NextUpdate must not be used. Without this the responder answers `good` for
-// every certificate revoked since the CRL was last published, indefinitely,
-// while reporting healthy — content-hash change detection cannot help, because
-// the contents never change.
-func TestFileSource_RejectsExpiredCRL(t *testing.T) {
+// TestFileSource_ExpiredCRLAtStartupFailsClosed covers the core invariant at
+// load time: a CRL already past its NextUpdate must not answer `good`. It is a
+// transient condition rather than a startup failure — the source constructs but
+// reports unhealthy and answers `unknown`, so a routine publication delay does
+// not become a crash loop.
+func TestFileSource_ExpiredCRLAtStartupFailsClosed(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "expired.crl")
 	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
-		time.Now().Add(-24*time.Hour), nil); err != nil {
+		time.Now().Add(-24*time.Hour), []pkix.RevokedCertificate{{
+			SerialNumber:   big.NewInt(42),
+			RevocationTime: time.Now(),
+		}}); err != nil {
 		t.Fatalf("writeCRL: %v", err)
 	}
 
 	s, err := NewFileSource(path, time.Minute, testIssuerCert)
-	if err == nil {
-		s.Stop()
-		t.Fatal("expected an expired CRL to be rejected at startup")
+	if err != nil {
+		t.Fatalf("an expired CRL should construct, not fail startup: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("expected an expiry error, got %v", err)
+	defer s.Stop()
+	if s.Healthy() {
+		t.Fatal("expected unhealthy for an expired CRL at startup")
+	}
+	if _, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); !errors.Is(err, ErrSourceUnhealthy) {
+		t.Fatalf("expected ErrSourceUnhealthy, got %v", err)
+	}
+}
+
+// TestFileSource_ExpiredInPlaceFailsClosed is the regression for the defect
+// review found: a CRL valid at load that expires while the file on disk never
+// changes. Content-hash change detection skips the re-parse, so a load-time
+// only expiry check would keep serving `good` forever. The file is deliberately
+// never rewritten.
+func TestFileSource_ExpiredInPlaceFailsClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "inplace.crl")
+	expiresAt := time.Now().Add(800 * time.Millisecond)
+	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey, expiresAt, nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	// A long reload interval guarantees the file is never re-read during the
+	// test: this exercises the live expiry check, not the reload path.
+	s, err := NewFileSource(path, time.Hour, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+	if !s.Healthy() {
+		t.Fatal("expected healthy while the CRL is still valid")
+	}
+
+	time.Sleep(time.Until(expiresAt) + 200*time.Millisecond)
+
+	if s.Healthy() {
+		t.Fatal("source still healthy after its CRL expired in place; the file was never re-read")
+	}
+	if _, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); !errors.Is(err, ErrSourceUnhealthy) {
+		t.Fatalf("expected ErrSourceUnhealthy after in-place expiry, got %v", err)
 	}
 }
 
@@ -780,51 +820,58 @@ func TestFileSource_ExpiredCRLOnReloadFailsClosed(t *testing.T) {
 
 // TestFileSource_ExpiryGrace covers the operator escape hatch: a CA that
 // publishes late should not take the responder down the instant NextUpdate
-// passes.
+// passes. Health is what reflects the grace, not construction — an expired CRL
+// always constructs now.
 func TestFileSource_ExpiryGrace(t *testing.T) {
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "grace.crl")
-	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
-		time.Now().Add(-30*time.Second), nil); err != nil {
-		t.Fatalf("writeCRL: %v", err)
+
+	newExpired := func(name string, opts ...FileSourceOption) *FileSource {
+		t.Helper()
+		path := filepath.Join(tmpDir, name)
+		if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
+			time.Now().Add(-30*time.Second), nil); err != nil {
+			t.Fatalf("writeCRL: %v", err)
+		}
+		s, err := NewFileSource(path, time.Minute, testIssuerCert, opts...)
+		if err != nil {
+			t.Fatalf("NewFileSource: %v", err)
+		}
+		return s
 	}
 
-	// Without grace: rejected.
-	if s, err := NewFileSource(path, time.Minute, testIssuerCert); err == nil {
-		s.Stop()
-		t.Fatal("expected rejection without a grace period")
+	// Without grace: unhealthy.
+	s0 := newExpired("nograce.crl")
+	defer s0.Stop()
+	if s0.Healthy() {
+		t.Fatal("expected unhealthy without a grace period")
 	}
 
-	// With grace wider than the overrun: accepted.
-	s, err := NewFileSource(path, time.Minute, testIssuerCert, WithCRLExpiryGrace(10*time.Minute))
-	if err != nil {
-		t.Fatalf("expected the CRL to be accepted within the grace period: %v", err)
-	}
-	defer s.Stop()
-	if !s.Healthy() {
+	// Grace wider than the overrun: healthy.
+	s1 := newExpired("wide.crl", WithCRLExpiryGrace(10*time.Minute))
+	defer s1.Stop()
+	if !s1.Healthy() {
 		t.Fatal("expected healthy within the grace period")
 	}
 
-	// Grace narrower than the overrun: still rejected.
-	if s2, err := NewFileSource(path, time.Minute, testIssuerCert, WithCRLExpiryGrace(5*time.Second)); err == nil {
-		s2.Stop()
-		t.Fatal("expected rejection when the grace period is shorter than the overrun")
+	// Grace narrower than the overrun: unhealthy.
+	s2 := newExpired("narrow.crl", WithCRLExpiryGrace(5*time.Second))
+	defer s2.Stop()
+	if s2.Healthy() {
+		t.Fatal("expected unhealthy when the grace period is shorter than the overrun")
 	}
 }
 
-// TestVerifyCRLNotExpired covers the expiry predicate directly, including the
-// zero-NextUpdate case. It is tested at this level rather than through a real
-// CRL because Go's x509.CreateRevocationList refuses to emit a CRL without a
-// NextUpdate — such a CRL can only come from another implementation, so the
-// defensive branch is unreachable through the normal fixture path.
-func TestVerifyCRLNotExpired(t *testing.T) {
+// TestCRLExpired covers the expiry predicate directly, including the
+// zero-NextUpdate case — Go's x509.CreateRevocationList refuses to emit a CRL
+// without a NextUpdate, so that branch is only reachable from a non-Go CA.
+func TestCRLExpired(t *testing.T) {
 	cases := []struct {
 		name       string
 		nextUpdate time.Time
 		grace      time.Duration
-		wantErr    bool
+		want       bool
 	}{
-		{"no NextUpdate is not an expiry", time.Time{}, 0, false},
+		{"no NextUpdate is never expired", time.Time{}, 0, false},
 		{"future NextUpdate", time.Now().Add(time.Hour), 0, false},
 		{"expired, no grace", time.Now().Add(-time.Minute), 0, true},
 		{"expired within grace", time.Now().Add(-time.Minute), time.Hour, false},
@@ -834,31 +881,30 @@ func TestVerifyCRLNotExpired(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &FileSource{expiryGrace: tc.grace}
-			err := s.verifyCRLNotExpired(&x509.RevocationList{NextUpdate: tc.nextUpdate})
-			if tc.wantErr && err == nil {
-				t.Fatal("expected an expiry error")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			s := &FileSource{expiryGrace: tc.grace, nextUpdate: tc.nextUpdate}
+			if got := s.crlExpired(); got != tc.want {
+				t.Fatalf("crlExpired() = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestFileSource_LogsReasonWhenGoingUnhealthy pins the operator-facing half of
-// failing closed: answering `unknown` is correct, but indistinguishable from
-// several other causes unless the reason is recorded.
-func TestFileSource_LogsReasonWhenGoingUnhealthy(t *testing.T) {
-	// The reload goroutine writes while the test reads, and bytes.Buffer is not
-	// safe for concurrent use — guard it rather than racing.
+// TestFileSource_LogsExpiryOnce pins the operator-facing half of failing
+// closed: the reason must be logged, at a level a default deployment sees, and
+// exactly once rather than every reload tick.
+//
+// The handler is at Info level deliberately — the earlier version of this test
+// ran at Debug and so could not tell the Error transition line from a Debug
+// repeat, letting a "log nothing but Debug" regression pass.
+func TestFileSource_LogsExpiryOnce(t *testing.T) {
 	buf := &lockedBuffer{}
-	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "logging.crl")
+	// Valid briefly, then expires in place with the file untouched.
 	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
-		time.Now().Add(time.Hour), nil); err != nil {
+		time.Now().Add(300*time.Millisecond), nil); err != nil {
 		t.Fatalf("writeCRL: %v", err)
 	}
 
@@ -868,11 +914,6 @@ func TestFileSource_LogsReasonWhenGoingUnhealthy(t *testing.T) {
 	}
 	defer s.Stop()
 
-	// Replace with an expired CRL and wait for the source to drop out.
-	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
-		time.Now().Add(-time.Hour), nil); err != nil {
-		t.Fatalf("writeCRL: %v", err)
-	}
 	deadline := time.Now().Add(3 * time.Second)
 	for s.Healthy() {
 		if time.Now().After(deadline) {
@@ -880,13 +921,12 @@ func TestFileSource_LogsReasonWhenGoingUnhealthy(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// Give several more reload ticks a chance to re-log.
+	time.Sleep(200 * time.Millisecond)
 
 	out := buf.String()
-	if !strings.Contains(out, "unhealthy") {
-		t.Fatalf("expected an unhealthy log line, got: %s", out)
-	}
-	if !strings.Contains(out, "expired") {
-		t.Fatalf("expected the log line to name the cause, got: %s", out)
+	if n := strings.Count(out, "CRL expired"); n != 1 {
+		t.Fatalf("expected the expiry to be logged exactly once at Info+, got %d occurrences in:\n%s", n, out)
 	}
 }
 

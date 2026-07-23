@@ -161,7 +161,7 @@ A fully annotated example lives at
 | `signer.issuer_cert_file` | **required** | Issuer of the certificates being checked |
 | `signer.response_validity` | **required** | Response validity window, sets `nextUpdate` (e.g. `24h`) |
 | `source.type` | **required** | `file`, `http`, or `static` |
-| `source.file.expiry_grace` | strict | How long a CRL stays usable past its `NextUpdate`. Empty or `0s` refuses an expired CRL |
+| `source.file.expiry_grace` | strict | How long a CRL stays usable past its `NextUpdate`. Empty or `0s` means an expired CRL is treated as unhealthy |
 | `cache.enabled` | `false` | In-memory response cache. The example config enables it |
 | `cache.ttl` | **required** | Cache entry lifetime (e.g. `1h`) — validated even when the cache is disabled |
 | `cache.max_entries` | `0` (cache inert) | Cache size cap. `0` silently disables caching |
@@ -212,12 +212,16 @@ The CRL's signature is verified against `signer.issuer_cert_file` before any of
 its entries are trusted, so a swapped or corrupted CRL is rejected instead of
 being served.
 
-**Expired CRLs are refused.** A CRL past its `NextUpdate` is not loaded, and one
-that expires while the responder is running takes the source unhealthy, so
-answers become `unknown` rather than a stale `good`. This matters because the
-failure is otherwise invisible: if publication stops, the file on disk never
-changes, so nothing detects that the data is obsolete while certificates
-revoked since then are still reported valid.
+**Expired CRLs are not served.** Expiry is checked live on every lookup, so a
+CRL past its `NextUpdate` takes the source unhealthy and answers become
+`unknown` rather than a stale `good` — whether it was already expired at
+startup or expires later while the file on disk never changes. This matters
+because the failure is otherwise invisible: if publication stops, the file
+never changes, so nothing detects that the data is obsolete while certificates
+revoked since then are still reported valid. An already-expired CRL at startup
+is a transient condition, not a fatal error: the responder starts, answers
+`unknown`, and recovers automatically when the CA publishes — a routine
+publication delay should not become a crash loop.
 
 If your CA publishes late, `expiry_grace` widens the window rather than taking
 the responder down at the moment `NextUpdate` passes:

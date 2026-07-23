@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Expired CRLs are no longer used. A CRL past its `NextUpdate` is refused at
-  load, and one that expires while running takes the file source unhealthy, so
-  the responder answers `unknown` instead of continuing to serve superseded
-  revocation data. Previously a stalled CRL publisher meant every certificate
-  revoked since the last publication was reported `good`, indefinitely, with
-  `/health` still green — the file never changes, so nothing detected it.
+- Expired CRLs are no longer used. Expiry is checked live on every lookup, so a
+  CRL past its `NextUpdate` takes the file source unhealthy and the responder
+  answers `unknown` — whether it was already expired at load or expires later
+  while the file on disk never changes. Previously a stalled CRL publisher meant
+  every certificate revoked since the last publication was reported `good`,
+  indefinitely, with `/health` still green. An already-expired CRL at startup is
+  now a transient condition the responder recovers from, not a fatal error.
 
 ### Added
 

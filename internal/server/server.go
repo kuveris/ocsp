@@ -51,13 +51,18 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
 	mux.HandleFunc("GET /{request}", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
 	mux.HandleFunc("GET /health", ServeHealth(s.signer, s.source))
-	// Serve this instance's registry rather than the global default, so
-	// /metrics reflects the collectors this server actually owns.
-	metricsHandler := promhttp.Handler()
-	if s.registry != nil {
-		metricsHandler = promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{})
+	// Serve this instance's registry rather than the global default. A nil
+	// registry gets a fresh empty one, not promhttp.Handler(): the global
+	// default no longer carries this service's ocsp_* metrics (they moved to the
+	// instance registry), so falling back to it would silently serve a 200 with
+	// none of them — alerting would go quiet instead of loud. InstrumentMetricHandler
+	// re-adds the promhttp_metric_handler_* scrape counters that the plain
+	// promhttp.Handler() provided, so /metrics output is unchanged.
+	reg := s.registry
+	if reg == nil {
+		reg = prometheus.NewRegistry()
 	}
-	mux.Handle("GET /metrics", metricsHandler)
+	mux.Handle("GET /metrics", promhttp.InstrumentMetricHandler(reg, promhttp.HandlerFor(reg, promhttp.HandlerOpts{})))
 
 	httpServer := &http.Server{
 		Addr:         s.cfg.Server.ListenAddr,

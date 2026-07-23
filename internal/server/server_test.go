@@ -76,14 +76,17 @@ func newTestServer(t *testing.T, tlsCfg config.TLSConfig) (*Server, string) {
 	if err != nil {
 		t.Fatalf("NewStaticSource: %v", err)
 	}
-	r := responder.NewResponder(src, sgn, time.Minute, 100, true, nil, nil, nil)
+	// Wire a real metrics registry so /metrics exercises the instance-registry
+	// path (promhttp.HandlerFor), not the nil fallback.
+	m, reg := NewMetrics()
+	r := responder.NewResponder(src, sgn, time.Minute, 100, true, m, m.CacheEntries, nil)
 
 	addr := freeLoopbackAddr(t)
 	cfg := &config.Config{
 		Server: config.ServerConfig{ListenAddr: addr, TLS: tlsCfg},
 		Cache:  config.CacheConfig{TTL: "1h"},
 	}
-	return New(cfg, r, sgn, src, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))), addr
+	return New(cfg, r, sgn, src, m, reg, slog.New(slog.NewTextHandler(io.Discard, nil))), addr
 }
 
 // freeLoopbackAddr reserves a port from the kernel and releases it, so tests
@@ -148,6 +151,25 @@ func TestServerStart_ServesAndShutsDownGracefully(t *testing.T) {
 		_ = resp.Body.Close()
 		if resp.StatusCode != tc.want {
 			t.Fatalf("GET %s = %d, want %d", tc.path, resp.StatusCode, tc.want)
+		}
+	}
+
+	// /metrics must actually serve this service's metrics over HTTP, not just
+	// return 200. ocsp_signer_days_until_expiry is a plain Gauge, so it is
+	// emitted from construction; if the instance registry were not wired to the
+	// handler, the body would be a valid 200 with no ocsp_* series at all. The
+	// promhttp_metric_handler_ series confirms InstrumentMetricHandler is
+	// applied, so /metrics output matches the plain promhttp.Handler() it
+	// replaced.
+	mresp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	body, _ := io.ReadAll(mresp.Body)
+	_ = mresp.Body.Close()
+	for _, want := range []string{"ocsp_signer_days_until_expiry", "go_goroutines", "promhttp_metric_handler_requests_total"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("/metrics body missing %q", want)
 		}
 	}
 

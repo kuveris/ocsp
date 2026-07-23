@@ -1,6 +1,7 @@
 package server
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -106,8 +107,12 @@ func TestNewMetrics_ExposesOCSPAndRuntimeMetrics(t *testing.T) {
 	if !hasGo {
 		t.Error("expected go_* runtime collectors to be registered")
 	}
-	if !hasProcess {
-		t.Error("expected process_* collectors to be registered")
+	// The process collector emits nothing where procfs is unavailable (macOS,
+	// Windows) — it degrades silently by design. The collector is always
+	// registered; only its output is platform-dependent, so only assert the
+	// series exist where they can.
+	if runtime.GOOS == "linux" && !hasProcess {
+		t.Error("expected process_* collectors to be registered on linux")
 	}
 }
 

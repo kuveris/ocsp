@@ -9,7 +9,7 @@
 set -eu
 
 profile="${1:-coverage.out}"
-minimum="${2:-${COVERAGE_MIN:-80}}"
+minimum="${2:-${COVERAGE_MIN:-85}}"
 
 if [ ! -f "$profile" ]; then
     echo "coverage-check: no profile at $profile — run go test -coverprofile first" >&2
@@ -22,6 +22,18 @@ if [ -z "$total" ]; then
     echo "coverage-check: could not read a total from $profile" >&2
     exit 1
 fi
+
+# awk coerces a non-numeric operand to 0, which would make the comparison
+# pass at any coverage while printing a reassuring "ok:". Reject both operands
+# up front rather than letting the gate silently stop gating.
+for value in "$total" "$minimum"; do
+    case "$value" in
+        '' | *[!0-9.]* | *.*.*)
+            echo "coverage-check: '$value' is not a number" >&2
+            exit 1
+            ;;
+    esac
+done
 
 awk -v have="$total" -v want="$minimum" 'BEGIN {
     if (have + 0 < want + 0) {

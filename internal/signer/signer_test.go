@@ -295,7 +295,7 @@ func TestSigner_CreateResponse_UnsupportedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	if _, err := s.CreateResponse(big.NewInt(1), source.Status(99), nil, time.Now(), time.Time{}); err == nil {
+	if _, _, err := s.CreateResponse(big.NewInt(1), source.Status(99), nil, time.Now(), time.Time{}); err == nil {
 		t.Fatal("expected error for unsupported status")
 	}
 }
@@ -305,7 +305,7 @@ func TestSigner_CreateResponse_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
+	der, _, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestSigner_CreateResponse_Revoked(t *testing.T) {
 		t.Fatalf("NewSigner: %v", err)
 	}
 	now := time.Now()
-	der, err := s.CreateResponse(big.NewInt(42), source.StatusRevoked, &source.RevocationInfo{RevokedAt: now, Reason: 1}, now, time.Time{})
+	der, _, err := s.CreateResponse(big.NewInt(42), source.StatusRevoked, &source.RevocationInfo{RevokedAt: now, Reason: 1}, now, time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestSigner_SignatureVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := s.CreateResponse(big.NewInt(123), source.StatusGood, nil, time.Now(), time.Time{})
+	der, _, err := s.CreateResponse(big.NewInt(123), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestSigner_CreateResponse_ECDSASigner(t *testing.T) {
 		t.Fatalf("NewSigner: %v", err)
 	}
 
-	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
+	der, _, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestCreateResponse_CapsNextUpdateAtSourceNextUpdate(t *testing.T) {
 
 	t.Run("caps when the CRL expires before the validity horizon", func(t *testing.T) {
 		crlNextUpdate := now.Add(10 * time.Minute) // sooner than 24h
-		der, err := s.CreateResponse(big.NewInt(1), source.StatusGood, nil, now, crlNextUpdate)
+		der, signedNextUpdate, err := s.CreateResponse(big.NewInt(1), source.StatusGood, nil, now, crlNextUpdate)
 		if err != nil {
 			t.Fatalf("CreateResponse: %v", err)
 		}
@@ -670,11 +670,14 @@ func TestCreateResponse_CapsNextUpdateAtSourceNextUpdate(t *testing.T) {
 		if resp.NextUpdate.After(crlNextUpdate.Add(time.Second)) {
 			t.Fatalf("response nextUpdate %v exceeds the CRL's %v", resp.NextUpdate, crlNextUpdate)
 		}
+		if !signedNextUpdate.Equal(resp.NextUpdate) {
+			t.Fatalf("returned nextUpdate %v differs from signed value %v", signedNextUpdate, resp.NextUpdate)
+		}
 	})
 
 	t.Run("uses the validity horizon when the CRL outlives it", func(t *testing.T) {
 		crlNextUpdate := now.Add(72 * time.Hour) // later than 24h
-		der, err := s.CreateResponse(big.NewInt(2), source.StatusGood, nil, now, crlNextUpdate)
+		der, signedNextUpdate, err := s.CreateResponse(big.NewInt(2), source.StatusGood, nil, now, crlNextUpdate)
 		if err != nil {
 			t.Fatalf("CreateResponse: %v", err)
 		}
@@ -686,10 +689,13 @@ func TestCreateResponse_CapsNextUpdateAtSourceNextUpdate(t *testing.T) {
 		if resp.NextUpdate.Before(horizon.Add(-time.Minute)) || resp.NextUpdate.After(horizon.Add(time.Minute)) {
 			t.Fatalf("expected nextUpdate near the 24h horizon %v, got %v", horizon, resp.NextUpdate)
 		}
+		if !signedNextUpdate.Equal(resp.NextUpdate) {
+			t.Fatalf("returned nextUpdate %v differs from signed value %v", signedNextUpdate, resp.NextUpdate)
+		}
 	})
 
 	t.Run("zero source nextUpdate means no cap", func(t *testing.T) {
-		der, err := s.CreateResponse(big.NewInt(3), source.StatusGood, nil, now, time.Time{})
+		der, signedNextUpdate, err := s.CreateResponse(big.NewInt(3), source.StatusGood, nil, now, time.Time{})
 		if err != nil {
 			t.Fatalf("CreateResponse: %v", err)
 		}
@@ -700,6 +706,9 @@ func TestCreateResponse_CapsNextUpdateAtSourceNextUpdate(t *testing.T) {
 		horizon := now.Add(24 * time.Hour)
 		if resp.NextUpdate.Before(horizon.Add(-time.Minute)) {
 			t.Fatalf("a zero source nextUpdate must not cap; got %v, want ~%v", resp.NextUpdate, horizon)
+		}
+		if !signedNextUpdate.Equal(resp.NextUpdate) {
+			t.Fatalf("returned nextUpdate %v differs from signed value %v", signedNextUpdate, resp.NextUpdate)
 		}
 	})
 }

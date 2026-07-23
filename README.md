@@ -163,7 +163,7 @@ A fully annotated example lives at
 | `source.type` | **required** | `file`, `http`, or `static` |
 | `source.file.expiry_grace` | strict | How long a CRL stays usable past its `NextUpdate`. Empty or `0s` means an expired CRL is treated as unhealthy |
 | `cache.enabled` | `false` | In-memory response cache. The example config enables it |
-| `cache.ttl` | **required** | Cache entry lifetime (e.g. `1h`) — validated even when the cache is disabled |
+| `cache.ttl` | **required** | Maximum cache entry lifetime (e.g. `1h`); entries expire sooner at the signed response `nextUpdate`. Validated even when disabled |
 | `cache.max_entries` | `0` (cache inert) | Cache size cap. `0` silently disables caching |
 | `logging.level` | `info` | `debug`, `info`, `warn`, `error` |
 | `logging.format` | `text` | `json` selects JSON; any other value is text |

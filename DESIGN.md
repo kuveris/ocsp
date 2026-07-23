@@ -220,9 +220,11 @@ wrong answers at runtime.
 ### Caching is safe by construction
 
 OCSP responses are signed and carry their own validity window, so caching cannot
-forge an answer. Cache eviction at `max_entries` drops an arbitrary entry rather
-than the oldest — acceptable because every entry is independently valid and a
-miss costs one source lookup.
+forge an answer. Each local entry expires at the earlier of its configured cache
+TTL and the response's signed `NextUpdate`, so the responder never serves stale
+DER just because its own TTL is longer. Cache eviction at `max_entries` drops an
+arbitrary entry rather than the oldest — acceptable because every entry is
+independently valid and a miss costs one source lookup.
 
 ### Release supply chain: what is hardened and what is not
 

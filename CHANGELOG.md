@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The responder cache now expires each entry at the earlier of its configured
+  TTL and the OCSP response's signed `NextUpdate`. It no longer serves an
+  already-expired DER response until the longer local cache TTL elapses.
+
 - File-source status lookups now validate and answer from one atomic CRL
   snapshot. A reload between the validity check and the serial lookup could
   previously mix two CRL generations and return `good` from an expired or

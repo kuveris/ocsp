@@ -342,7 +342,7 @@ func TestParseOCSPStatus_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := sgn.CreateResponse(big.NewInt(1), source.StatusGood, nil, time.Now(), time.Time{})
+	der, _, err := sgn.CreateResponse(big.NewInt(1), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestParseOCSPStatus_Revoked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := sgn.CreateResponse(big.NewInt(2), source.StatusRevoked, &source.RevocationInfo{RevokedAt: time.Now()}, time.Now(), time.Time{})
+	der, _, err := sgn.CreateResponse(big.NewInt(2), source.StatusRevoked, &source.RevocationInfo{RevokedAt: time.Now()}, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestParseOCSPStatus_Unknown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := sgn.CreateResponse(big.NewInt(3), source.StatusUnknown, nil, time.Now(), time.Time{})
+	der, _, err := sgn.CreateResponse(big.NewInt(3), source.StatusUnknown, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}

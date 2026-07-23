@@ -29,6 +29,16 @@ func (f *fakeMetrics) RecordSourceRequest(sourceName, result string)            
 func (f *fakeMetrics) RecordCacheHit()                                              { f.cacheHits++ }
 func (f *fakeMetrics) RecordCacheMiss()                                             { f.cacheMisses++ }
 
+type recordingGauge struct {
+	prometheus.Gauge
+	value float64
+}
+
+func (g *recordingGauge) Set(v float64) {
+	g.value = v
+	g.Gauge.Set(v)
+}
+
 type testSigner struct {
 	issuer *x509.Certificate
 
@@ -87,11 +97,12 @@ func newTestSigner(t *testing.T) *testSigner {
 
 func (s *testSigner) IssuerCert() *x509.Certificate { return s.issuer }
 
-func (s *testSigner) CreateResponse(serial *big.Int, st source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error) {
+func (s *testSigner) CreateResponse(serial *big.Int, st source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, time.Time, error) {
 	nextUpdate := thisUpdate.Add(s.validity)
 	if !sourceNextUpdate.IsZero() && sourceNextUpdate.Before(nextUpdate) {
 		nextUpdate = sourceNextUpdate
 	}
+	nextUpdate = nextUpdate.UTC().Truncate(time.Second)
 	r := xocsp.Response{
 		Status:       xocsp.Unknown,
 		SerialNumber: serial,
@@ -112,9 +123,9 @@ func (s *testSigner) CreateResponse(serial *big.Int, st source.Status, revInfo *
 	}
 	der, err := xocsp.CreateResponse(s.issuer, s.signerCert, r, s.key)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
-	return der, nil
+	return der, nextUpdate, nil
 }
 
 type countingSource struct {
@@ -188,6 +199,30 @@ func TestHandle_ForwardsSourceNextUpdate(t *testing.T) {
 	resp := parseResp(t, sgn.IssuerCert(), der)
 	if !resp.NextUpdate.Equal(sourceNextUpdate) {
 		t.Fatalf("response nextUpdate = %v, want source nextUpdate %v", resp.NextUpdate, sourceNextUpdate)
+	}
+}
+
+func TestHandle_CacheEntryDoesNotOutliveSignedResponse(t *testing.T) {
+	sgn := newTestSigner(t)
+	sourceNextUpdate := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	src := &nextUpdateSource{nextUpdate: sourceNextUpdate}
+	r := NewResponder(src, sgn, time.Hour, 100, true, nil, nil, nil)
+	serial := big.NewInt(101)
+
+	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), serial))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	resp := parseResp(t, sgn.IssuerCert(), der)
+
+	r.cache.mu.RLock()
+	entry := r.cache.entries[serial.String()]
+	r.cache.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("expected response to be cached")
+	}
+	if entry.expiresAt.After(resp.NextUpdate) {
+		t.Fatalf("cache expiry %v exceeds signed nextUpdate %v", entry.expiresAt, resp.NextUpdate)
 	}
 }
 
@@ -321,15 +356,15 @@ func TestCache_Get_Disabled(t *testing.T) {
 }
 
 func TestCache_Get_ExpiredEntry(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
 	c := &cache{
 		entries:    make(map[string]*cacheEntry),
-		ttl:        time.Millisecond,
+		ttl:        time.Minute,
 		maxEntries: 10,
 		enabled:    true,
 	}
-	c.set("key", []byte("data"))
-	time.Sleep(5 * time.Millisecond)
-	if _, ok := c.get("key"); ok {
+	c.setAt("key", []byte("data"), now, time.Time{})
+	if _, ok := c.getAt("key", now.Add(time.Minute)); ok {
 		t.Fatal("expected cache miss for expired entry")
 	}
 	// Entry must have been deleted.
@@ -345,7 +380,7 @@ func TestCache_Set_MaxEntriesZero(t *testing.T) {
 		maxEntries: 0,
 		enabled:    true,
 	}
-	c.set("key", []byte("data"))
+	c.set("key", []byte("data"), time.Time{})
 	if len(c.entries) != 0 {
 		t.Fatal("expected no entry when maxEntries=0")
 	}
@@ -358,11 +393,67 @@ func TestCache_Set_Eviction(t *testing.T) {
 		maxEntries: 2,
 		enabled:    true,
 	}
-	c.set("a", []byte("1"))
-	c.set("b", []byte("2"))
-	c.set("c", []byte("3")) // should evict one entry
+	c.set("a", []byte("1"), time.Time{})
+	c.set("b", []byte("2"), time.Time{})
+	c.set("c", []byte("3"), time.Time{}) // should evict one entry
 	if len(c.entries) > 2 {
 		t.Fatalf("expected at most 2 entries after eviction, got %d", len(c.entries))
+	}
+}
+
+func TestCache_SetAtUsesEarlierDeadline(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		signedNextUpdate time.Time
+		wantExpiry       time.Time
+	}{
+		{"signed response expires first", now.Add(10 * time.Minute), now.Add(10 * time.Minute)},
+		{"cache TTL expires first", now.Add(2 * time.Hour), now.Add(time.Hour)},
+		{"zero signed deadline uses TTL", time.Time{}, now.Add(time.Hour)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &cache{
+				entries:    make(map[string]*cacheEntry),
+				ttl:        time.Hour,
+				maxEntries: 10,
+				enabled:    true,
+			}
+			c.setAt("key", []byte("data"), now, tt.signedNextUpdate)
+			entry := c.entries["key"]
+			if entry == nil {
+				t.Fatal("expected cache entry")
+			}
+			if !entry.expiresAt.Equal(tt.wantExpiry) {
+				t.Fatalf("expiresAt = %v, want %v", entry.expiresAt, tt.wantExpiry)
+			}
+		})
+	}
+}
+
+func TestCache_SetAtSkipsAlreadyExpiredResponse(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	gauge := &recordingGauge{Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_cache_skip_expired_gauge",
+		Help: "test",
+	})}
+	c := &cache{
+		entries:      make(map[string]*cacheEntry),
+		ttl:          time.Hour,
+		maxEntries:   10,
+		enabled:      true,
+		entriesGauge: gauge,
+	}
+
+	c.setAt("key", []byte("stale"), now, now)
+
+	if len(c.entries) != 0 {
+		t.Fatal("an already-expired response must not be cached")
+	}
+	if gauge.value != 0 {
+		t.Fatalf("gauge = %v, want 0 when nothing was cached", gauge.value)
 	}
 }
 
@@ -395,8 +486,8 @@ func TestValidateIssuerBinding_NilRequest(t *testing.T) {
 type failingSigner struct{ issuer *x509.Certificate }
 
 func (f *failingSigner) IssuerCert() *x509.Certificate { return f.issuer }
-func (f *failingSigner) CreateResponse(_ *big.Int, _ source.Status, _ *source.RevocationInfo, _ time.Time, _ time.Time) ([]byte, error) {
-	return nil, fmt.Errorf("signer error")
+func (f *failingSigner) CreateResponse(_ *big.Int, _ source.Status, _ *source.RevocationInfo, _ time.Time, _ time.Time) ([]byte, time.Time, error) {
+	return nil, time.Time{}, fmt.Errorf("signer error")
 }
 
 func TestValidateIssuerBinding_HashUnavailable(t *testing.T) {
@@ -483,22 +574,28 @@ func TestHandle_SignerError(t *testing.T) {
 }
 
 func TestCache_Get_GaugeUpdate(t *testing.T) {
-	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	gauge := &recordingGauge{Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "test_cache_get_gauge",
 		Help: "test",
-	})
+	})}
 	c := &cache{
 		entries:      make(map[string]*cacheEntry),
-		ttl:          time.Millisecond,
+		ttl:          time.Hour,
 		maxEntries:   10,
 		enabled:      true,
 		entriesGauge: gauge,
 	}
-	c.set("k", []byte("v"))
-	time.Sleep(5 * time.Millisecond) // let entry expire
-	// get should delete the expired entry and update the gauge
-	if _, ok := c.get("k"); ok {
+	signedNextUpdate := now.Add(10 * time.Minute)
+	c.setAt("k", []byte("v"), now, signedNextUpdate)
+	if gauge.value != 1 {
+		t.Fatalf("gauge after insert = %v, want 1", gauge.value)
+	}
+	if _, ok := c.getAt("k", signedNextUpdate); ok {
 		t.Fatal("expected cache miss for expired entry")
+	}
+	if gauge.value != 0 {
+		t.Fatalf("gauge after expiry = %v, want 0", gauge.value)
 	}
 }
 
@@ -529,6 +626,31 @@ func TestHandle_MetricsRecorded(t *testing.T) {
 	}
 }
 
+func TestHandle_ExpiredSignedResponseCountsAsCacheMiss(t *testing.T) {
+	sgn := newTestSigner(t)
+	inner, _ := source.NewStaticSource("good")
+	src := &countingSource{inner: inner}
+	m := &fakeMetrics{}
+	r := NewResponder(src, sgn, time.Hour, 100, true, m, nil, nil)
+	serial := big.NewInt(78)
+	req := makeRequest(t, sgn.IssuerCert(), serial)
+	now := time.Now()
+	r.cache.setAt(serial.String(), []byte("stale"), now.Add(-2*time.Hour), now.Add(-time.Hour))
+
+	if _, err := r.Handle(context.Background(), req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if m.cacheHits != 0 {
+		t.Fatalf("cache hits = %d, want 0", m.cacheHits)
+	}
+	if m.cacheMisses != 1 {
+		t.Fatalf("cache misses = %d, want 1", m.cacheMisses)
+	}
+	if m.sourceReqs != 1 || src.count != 1 {
+		t.Fatalf("source requests: metrics=%d calls=%d, want 1 each", m.sourceReqs, src.count)
+	}
+}
+
 func TestValidateIssuerBinding_KeyHashMismatch(t *testing.T) {
 	sgn := newTestSigner(t)
 	issuer := sgn.IssuerCert()
@@ -554,10 +676,10 @@ func TestValidateIssuerBinding_KeyHashMismatch(t *testing.T) {
 }
 
 func TestCache_Set_GaugeUpdate(t *testing.T) {
-	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+	gauge := &recordingGauge{Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "test_cache_set_gauge",
 		Help: "test",
-	})
+	})}
 	c := &cache{
 		entries:      make(map[string]*cacheEntry),
 		ttl:          time.Minute,
@@ -565,6 +687,8 @@ func TestCache_Set_GaugeUpdate(t *testing.T) {
 		enabled:      true,
 		entriesGauge: gauge,
 	}
-	c.set("k", []byte("v"))
-	// gauge should have been updated — no panic is the main check
+	c.set("k", []byte("v"), time.Time{})
+	if gauge.value != 1 {
+		t.Fatalf("gauge after insert = %v, want 1", gauge.value)
+	}
 }

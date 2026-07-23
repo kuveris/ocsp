@@ -43,7 +43,7 @@ type Responder struct {
 
 type signer interface {
 	IssuerCert() *x509.Certificate
-	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error)
+	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, time.Time, error)
 }
 
 func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, metrics MetricsRecorder, cacheEntriesGauge prometheus.Gauge, logger *slog.Logger) *Responder {
@@ -116,12 +116,12 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 		r.metrics.RecordSourceRequest(r.source.Name(), result)
 	}
 
-	der, err := r.signer.CreateResponse(serial, status, revInfo, time.Now(), sourceNextUpdate)
+	der, signedNextUpdate, err := r.signer.CreateResponse(serial, status, revInfo, time.Now(), sourceNextUpdate)
 	if err != nil {
 		return nil, fmt.Errorf("ocsp-responder/responder: %w", err)
 	}
 
-	r.cache.set(key, der)
+	r.cache.set(key, der, signedNextUpdate)
 	r.logger.Info("ocsp", "serial", serialHex(serial), "status", statusString(status), "source", r.source.Name(), "cache_hit", false, "duration_ms", time.Since(start).Milliseconds())
 	return der, nil
 }
@@ -198,6 +198,10 @@ type cacheEntry struct {
 }
 
 func (c *cache) get(key string) ([]byte, bool) {
+	return c.getAt(key, time.Now())
+}
+
+func (c *cache) getAt(key string, now time.Time) ([]byte, bool) {
 	if !c.enabled {
 		return nil, false
 	}
@@ -207,7 +211,7 @@ func (c *cache) get(key string) ([]byte, bool) {
 	if e == nil {
 		return nil, false
 	}
-	if time.Now().After(e.expiresAt) {
+	if !now.Before(e.expiresAt) {
 		c.mu.Lock()
 		delete(c.entries, key)
 		n := len(c.entries)
@@ -220,10 +224,22 @@ func (c *cache) get(key string) ([]byte, bool) {
 	return e.data, true
 }
 
-func (c *cache) set(key string, data []byte) {
+func (c *cache) set(key string, data []byte, signedNextUpdate time.Time) {
+	c.setAt(key, data, time.Now(), signedNextUpdate)
+}
+
+func (c *cache) setAt(key string, data []byte, insertedAt, signedNextUpdate time.Time) {
 	if !c.enabled || c.maxEntries <= 0 {
 		return
 	}
+	expiresAt := insertedAt.Add(c.ttl)
+	if !signedNextUpdate.IsZero() && signedNextUpdate.Before(expiresAt) {
+		expiresAt = signedNextUpdate
+	}
+	if !insertedAt.Before(expiresAt) {
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.maxEntries {
@@ -232,7 +248,7 @@ func (c *cache) set(key string, data []byte) {
 			break
 		}
 	}
-	c.entries[key] = &cacheEntry{data: data, expiresAt: time.Now().Add(c.ttl)}
+	c.entries[key] = &cacheEntry{data: data, expiresAt: expiresAt}
 	n := len(c.entries)
 	if c.entriesGauge != nil {
 		c.entriesGauge.Set(float64(n))

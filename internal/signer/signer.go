@@ -93,7 +93,7 @@ func verifySignerTrust(cert, issuer *x509.Certificate) error {
 	return nil
 }
 
-func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error) {
+func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, time.Time, error) {
 	var ocspStatus int
 	var revokedAt time.Time
 	reason := 0
@@ -110,7 +110,7 @@ func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *
 	case source.StatusUnknown:
 		ocspStatus = xocsp.Unknown
 	default:
-		return nil, fmt.Errorf("ocsp-responder/signer: unsupported status %v", status)
+		return nil, time.Time{}, fmt.Errorf("ocsp-responder/signer: unsupported status %v", status)
 	}
 
 	// Cap the response validity at the source's own NextUpdate (the CRL's), so
@@ -121,6 +121,10 @@ func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *
 	if !sourceNextUpdate.IsZero() && sourceNextUpdate.Before(nextUpdate) {
 		nextUpdate = sourceNextUpdate
 	}
+	// GeneralizedTime is encoded at whole-second precision. Normalize before
+	// signing and return this exact value so the responder cache cannot outlive
+	// the deadline carried by the DER by a fractional second.
+	nextUpdate = nextUpdate.UTC().Truncate(time.Second)
 
 	template := xocsp.Response{
 		Status:           ocspStatus,
@@ -135,9 +139,9 @@ func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *
 
 	der, err := xocsp.CreateResponse(s.issuerCert, s.cert, template, s.key)
 	if err != nil {
-		return nil, fmt.Errorf("ocsp-responder/signer: %w", err)
+		return nil, time.Time{}, fmt.Errorf("ocsp-responder/signer: %w", err)
 	}
-	return der, nil
+	return der, nextUpdate, nil
 }
 
 func (s *Signer) IssuerCert() *x509.Certificate { return s.issuerCert }

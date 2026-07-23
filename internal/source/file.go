@@ -57,6 +57,10 @@ type FileSource struct {
 
 	logger *slog.Logger
 
+	// statusSnapshotHook is used by concurrency tests to coordinate a CRL
+	// reload at the boundary between snapshot capture and result construction.
+	statusSnapshotHook func()
+
 	done chan struct{}
 }
 
@@ -131,24 +135,32 @@ func (s *FileSource) Healthy() bool { return s.loaded.Load() && s.crlUsable() }
 // freshly published CRL is not rejected as not-yet-valid.
 const crlClockSkewAllowance = 5 * time.Minute
 
-// crlUsable reports whether the loaded CRL is within its validity window: not
-// expired and not still in the future.
-func (s *FileSource) crlUsable() bool {
-	return !s.crlExpired() && !s.crlNotYetValid()
+// crlValiditySnapshot captures both validity bounds from one CRL generation.
+func (s *FileSource) crlValiditySnapshot() (time.Time, time.Time) {
+	s.mu.RLock()
+	tu, nu := s.thisUpdate, s.nextUpdate
+	s.mu.RUnlock()
+	return tu, nu
 }
 
-// crlNotYetValid reports whether the loaded CRL's ThisUpdate is meaningfully in
-// the future — a post-dated CRL, or a host clock that is behind. Symmetric with
-// crlExpired: the two together bound both ends of the validity window, and a
-// CRL outside it is treated as unhealthy rather than served.
-func (s *FileSource) crlNotYetValid() bool {
-	s.mu.RLock()
-	tu := s.thisUpdate
-	s.mu.RUnlock()
-	if tu.IsZero() {
-		return false
-	}
-	return time.Now().Before(tu.Add(-crlClockSkewAllowance))
+// crlUsable reports whether the loaded CRL is within its validity window: not
+// expired and not still in the future. Both bounds come from one snapshot and
+// are evaluated against one clock reading.
+func (s *FileSource) crlUsable() bool {
+	tu, nu := s.crlValiditySnapshot()
+	return crlUsableAt(tu, nu, s.expiryGrace, time.Now())
+}
+
+// crlNotYetValidAt reports whether this CRL generation's ThisUpdate is
+// meaningfully in the future — a post-dated CRL, or a host clock that is
+// behind. Symmetric with crlExpiredAt: the two together bound both ends of the
+// validity window.
+func crlNotYetValidAt(thisUpdate, now time.Time) bool {
+	return !thisUpdate.IsZero() && now.Before(thisUpdate.Add(-crlClockSkewAllowance))
+}
+
+func crlUsableAt(thisUpdate, nextUpdate time.Time, expiryGrace time.Duration, now time.Time) bool {
+	return !crlExpiredAt(nextUpdate, expiryGrace, now) && !crlNotYetValidAt(thisUpdate, now)
 }
 
 // crlExpired reports whether the loaded CRL is past its NextUpdate (plus any
@@ -158,13 +170,12 @@ func (s *FileSource) crlNotYetValid() bool {
 // serving superseded revocation data indefinitely — reporting `good` for a
 // certificate revoked since the last publication.
 func (s *FileSource) crlExpired() bool {
-	s.mu.RLock()
-	nu := s.nextUpdate
-	s.mu.RUnlock()
-	if nu.IsZero() {
-		return false
-	}
-	return time.Now().After(nu.Add(s.expiryGrace))
+	_, nu := s.crlValiditySnapshot()
+	return crlExpiredAt(nu, s.expiryGrace, time.Now())
+}
+
+func crlExpiredAt(nextUpdate time.Time, expiryGrace time.Duration, now time.Time) bool {
+	return !nextUpdate.IsZero() && now.After(nextUpdate.Add(expiryGrace))
 }
 
 func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x509.Certificate) (*CertStatus, error) {
@@ -174,10 +185,18 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 	if !s.loaded.Load() {
 		return nil, ErrSourceUnhealthy
 	}
-	// Fail closed on a CRL outside its validity window (expired or not yet
-	// valid). Checked here, not only in the reload loop, so there is no window
-	// between a CRL going out of validity and the next reload tick.
-	if !s.crlUsable() {
+
+	// Validate and read from one CRL generation. A reload may replace the CRL
+	// immediately after this lock is released, but this answer remains
+	// internally consistent: it never validates one generation and returns
+	// status from another.
+	now := time.Now()
+	s.mu.RLock()
+	thisUpdate, nextUpdate := s.thisUpdate, s.nextUpdate
+	rev, ok := s.revoked[serial.String()]
+	usable := crlUsableAt(thisUpdate, nextUpdate, s.expiryGrace, now)
+	s.mu.RUnlock()
+	if !usable {
 		return nil, ErrSourceUnhealthy
 	}
 	if issuer == nil {
@@ -187,10 +206,9 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate mismatch")
 	}
 
-	s.mu.RLock()
-	rev, ok := s.revoked[serial.String()]
-	nextUpdate := s.nextUpdate
-	s.mu.RUnlock()
+	if s.statusSnapshotHook != nil {
+		s.statusSnapshotHook()
+	}
 
 	if ok {
 		reason := 0
@@ -257,12 +275,11 @@ func (s *FileSource) log() *slog.Logger {
 // against: the responder degrades to `unknown` and an operator seeing /health
 // flip to 503 has nothing to explain it.
 func (s *FileSource) checkExpiry() {
-	if !s.crlUsable() {
+	tu, nu := s.crlValiditySnapshot()
+	now := time.Now()
+	if !crlUsableAt(tu, nu, s.expiryGrace, now) {
 		if !s.expiredLogged.Swap(true) {
-			s.mu.RLock()
-			tu, nu := s.thisUpdate, s.nextUpdate
-			s.mu.RUnlock()
-			if s.crlNotYetValid() {
+			if crlNotYetValidAt(tu, now) {
 				s.log().Error("CRL is not yet valid; answering unknown until it takes effect",
 					"path", s.crlPath, "this_update", tu.UTC().Format(time.RFC3339))
 			} else {

@@ -1052,3 +1052,57 @@ func TestFileSource_AcceptsCRLWithinClockSkew(t *testing.T) {
 		t.Fatal("expected healthy for a CRL within the clock-skew allowance")
 	}
 }
+
+func TestFileSource_GetStatusUsesOneCRLSnapshotAcrossReload(t *testing.T) {
+	const serial = 42
+	now := time.Now()
+	validNextUpdate := now.Add(time.Hour)
+	snapshotCaptured := make(chan struct{})
+	resumeLookup := make(chan struct{})
+
+	s := &FileSource{
+		issuerCert: testIssuerCert,
+		revoked: map[string]pkix.RevokedCertificate{
+			"42": {
+				SerialNumber:   big.NewInt(serial),
+				RevocationTime: now.Add(-time.Minute),
+			},
+		},
+		thisUpdate: now.Add(-time.Hour),
+		nextUpdate: validNextUpdate,
+		statusSnapshotHook: func() {
+			close(snapshotCaptured)
+			<-resumeLookup
+		},
+	}
+	s.loaded.Store(true)
+
+	type result struct {
+		status *CertStatus
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		status, err := s.GetStatus(context.Background(), big.NewInt(serial), testIssuerCert)
+		resultCh <- result{status: status, err: err}
+	}()
+
+	<-snapshotCaptured
+	s.mu.Lock()
+	s.revoked = map[string]pkix.RevokedCertificate{}
+	s.thisUpdate = now.Add(time.Hour)
+	s.nextUpdate = now.Add(2 * time.Hour)
+	s.mu.Unlock()
+	close(resumeLookup)
+
+	got := <-resultCh
+	if got.err != nil {
+		t.Fatalf("GetStatus: %v", got.err)
+	}
+	if got.status.Status != StatusRevoked {
+		t.Fatalf("status = %v, want revoked from the valid snapshot", got.status.Status)
+	}
+	if !got.status.SourceNextUpdate.Equal(validNextUpdate) {
+		t.Fatalf("SourceNextUpdate = %v, want %v from the valid snapshot", got.status.SourceNextUpdate, validNextUpdate)
+	}
+}

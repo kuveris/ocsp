@@ -195,7 +195,9 @@ was not configured for is answering questions it has no authority over.
 A CRL is checked for issuer match and signature validity before its entries are
 trusted, so a swapped or corrupted CRL is rejected rather than served.
 
-It is also checked against its own `NextUpdate`, and this is done **live on
+It is also checked against **both** ends of its validity window — `NextUpdate`
+(expiry) and `ThisUpdate` (not-yet-valid, with a few minutes of clock-skew
+tolerance) — and this is done **live on
 every lookup**, not once at load. Content-hash change detection answers "did the
 file change", which is the wrong question when a publisher stalls: the file
 stays byte-identical and perfectly valid, while the data inside it silently goes

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A CRL whose `ThisUpdate` is in the future (post-dated by the CA, or a host
+  clock that is behind) is no longer used. Like an expired CRL it takes the file
+  source unhealthy and the responder answers `unknown`, with a five-minute
+  clock-skew tolerance so a freshly published CRL is not rejected.
+
 - The `http` status source now recovers health under continuous cache-hit
   traffic. Previously, once a CA failure demoted it, a request served from the
   response cache never contacted the CA, so `/health` could stay 503

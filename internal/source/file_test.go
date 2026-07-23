@@ -957,7 +957,10 @@ func (b *lockedBuffer) String() string {
 func TestFileSource_ReportsCRLNextUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "nu.crl")
-	nextUpdate := time.Now().Add(90 * time.Minute).UTC().Truncate(time.Second)
+	// 30m out: writeCRLWithNextUpdate sets ThisUpdate = NextUpdate - 1h, so this
+	// keeps ThisUpdate ~30m in the past (a currently-valid CRL). A larger window
+	// would push ThisUpdate into the future and trip the not-yet-valid check.
+	nextUpdate := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
 	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey, nextUpdate, []pkix.RevokedCertificate{{
 		SerialNumber:   big.NewInt(42),
 		RevocationTime: time.Now(),
@@ -979,5 +982,54 @@ func TestFileSource_ReportsCRLNextUpdate(t *testing.T) {
 		if !cs.SourceNextUpdate.Equal(nextUpdate) {
 			t.Fatalf("serial %v: SourceNextUpdate = %v, want %v", serial, cs.SourceNextUpdate, nextUpdate)
 		}
+	}
+}
+
+// TestFileSource_RejectsNotYetValidCRL covers MXS-1810: a CRL whose ThisUpdate
+// is meaningfully in the future (a post-dated CRL, or a host clock that is
+// behind) must not be served — it is treated like an expired one, unhealthy and
+// answering unknown. writeCRLWithNextUpdate sets ThisUpdate = NextUpdate - 1h,
+// so a NextUpdate 90m out puts ThisUpdate ~30m in the future, past the skew
+// allowance.
+func TestFileSource_RejectsNotYetValidCRL(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "future.crl")
+	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
+		time.Now().Add(90*time.Minute), nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	s, err := NewFileSource(path, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("a not-yet-valid CRL should construct, not fail startup: %v", err)
+	}
+	defer s.Stop()
+	if s.Healthy() {
+		t.Fatal("expected unhealthy for a not-yet-valid CRL (ThisUpdate ~30m in the future)")
+	}
+	if _, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); !errors.Is(err, ErrSourceUnhealthy) {
+		t.Fatalf("expected ErrSourceUnhealthy, got %v", err)
+	}
+}
+
+// TestFileSource_AcceptsCRLWithinClockSkew guards against false positives: a
+// CRL whose ThisUpdate is only slightly in the future (ordinary clock jitter,
+// within the skew allowance) must still be usable. NextUpdate 63m out puts
+// ThisUpdate ~3m ahead, inside the 5m allowance.
+func TestFileSource_AcceptsCRLWithinClockSkew(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "skew.crl")
+	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey,
+		time.Now().Add(63*time.Minute), nil); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	s, err := NewFileSource(path, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+	if !s.Healthy() {
+		t.Fatal("expected healthy for a CRL within the clock-skew allowance")
 	}
 }

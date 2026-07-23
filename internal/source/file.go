@@ -31,6 +31,7 @@ type FileSource struct {
 
 	mu         sync.RWMutex
 	revoked    map[string]pkix.RevokedCertificate
+	thisUpdate time.Time // under mu; when the CRL becomes valid (zero = unset)
 	nextUpdate time.Time // under mu; zero means the CRL carries no expiry
 	loaded     atomic.Bool
 
@@ -123,7 +124,32 @@ func (s *FileSource) Stop() {
 
 func (s *FileSource) Name() string { return "file" }
 
-func (s *FileSource) Healthy() bool { return s.loaded.Load() && !s.crlExpired() }
+func (s *FileSource) Healthy() bool { return s.loaded.Load() && s.crlUsable() }
+
+// crlClockSkewAllowance tolerates a CRL whose ThisUpdate is slightly ahead of
+// this host's clock — ordinary jitter between the CA and the responder — so a
+// freshly published CRL is not rejected as not-yet-valid.
+const crlClockSkewAllowance = 5 * time.Minute
+
+// crlUsable reports whether the loaded CRL is within its validity window: not
+// expired and not still in the future.
+func (s *FileSource) crlUsable() bool {
+	return !s.crlExpired() && !s.crlNotYetValid()
+}
+
+// crlNotYetValid reports whether the loaded CRL's ThisUpdate is meaningfully in
+// the future — a post-dated CRL, or a host clock that is behind. Symmetric with
+// crlExpired: the two together bound both ends of the validity window, and a
+// CRL outside it is treated as unhealthy rather than served.
+func (s *FileSource) crlNotYetValid() bool {
+	s.mu.RLock()
+	tu := s.thisUpdate
+	s.mu.RUnlock()
+	if tu.IsZero() {
+		return false
+	}
+	return time.Now().Before(tu.Add(-crlClockSkewAllowance))
+}
 
 // crlExpired reports whether the loaded CRL is past its NextUpdate (plus any
 // configured grace). It is evaluated live on every status lookup and health
@@ -148,9 +174,10 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 	if !s.loaded.Load() {
 		return nil, ErrSourceUnhealthy
 	}
-	// Fail closed on an expired CRL. Checked here, not only in the reload loop,
-	// so there is no window between a CRL expiring and the next reload tick.
-	if s.crlExpired() {
+	// Fail closed on a CRL outside its validity window (expired or not yet
+	// valid). Checked here, not only in the reload loop, so there is no window
+	// between a CRL going out of validity and the next reload tick.
+	if !s.crlUsable() {
 		return nil, ErrSourceUnhealthy
 	}
 	if issuer == nil {
@@ -230,18 +257,23 @@ func (s *FileSource) log() *slog.Logger {
 // against: the responder degrades to `unknown` and an operator seeing /health
 // flip to 503 has nothing to explain it.
 func (s *FileSource) checkExpiry() {
-	if s.crlExpired() {
+	if !s.crlUsable() {
 		if !s.expiredLogged.Swap(true) {
 			s.mu.RLock()
-			nu := s.nextUpdate
+			tu, nu := s.thisUpdate, s.nextUpdate
 			s.mu.RUnlock()
-			s.log().Error("CRL expired; answering unknown until a fresh CRL is published",
-				"path", s.crlPath, "next_update", nu.UTC().Format(time.RFC3339), "grace", s.expiryGrace)
+			if s.crlNotYetValid() {
+				s.log().Error("CRL is not yet valid; answering unknown until it takes effect",
+					"path", s.crlPath, "this_update", tu.UTC().Format(time.RFC3339))
+			} else {
+				s.log().Error("CRL expired; answering unknown until a fresh CRL is published",
+					"path", s.crlPath, "next_update", nu.UTC().Format(time.RFC3339), "grace", s.expiryGrace)
+			}
 		}
 		return
 	}
 	if s.expiredLogged.Swap(false) {
-		s.log().Info("CRL is current again", "path", s.crlPath)
+		s.log().Info("CRL is within its validity window again", "path", s.crlPath)
 	}
 }
 
@@ -377,6 +409,7 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	// a zero value means no expiry to enforce.
 	s.mu.Lock()
 	s.revoked = revoked
+	s.thisUpdate = rl.ThisUpdate
 	s.nextUpdate = rl.NextUpdate
 	s.mu.Unlock()
 

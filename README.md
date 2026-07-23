@@ -212,6 +212,11 @@ The CRL's signature is verified against `signer.issuer_cert_file` before any of
 its entries are trusted, so a swapped or corrupted CRL is rejected instead of
 being served.
 
+**A CRL outside its validity window is not served.** Both ends are checked: a
+CRL past its `NextUpdate` and one whose `ThisUpdate` is still in the future
+(post-dated, or a host clock that is behind) take the source unhealthy, with a
+few minutes of clock-skew tolerance so a freshly published CRL is not rejected.
+
 **Expired CRLs are not served.** Expiry is checked live on every lookup, so a
 CRL past its `NextUpdate` takes the source unhealthy and answers become
 `unknown` rather than a stale `good` — whether it was already expired at

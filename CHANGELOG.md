@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Added `.dockerignore`. The build context previously carried `.git`, which
+  differs on every checkout and so invalidated the source-copy layer and the
+  compile behind it on every CI run — making the layer cache not merely useless
+  but counterproductive, since each run wrote a full layer set into a shared,
+  size-capped cache. Local builds also no longer copy `certs/` into an
+  intermediate layer.
 - Prometheus collectors are registered on a per-instance registry instead of
   the global default, so the responder can be constructed more than once in a
   process. `/metrics` output is unchanged, including the `go_*` and `process_*`

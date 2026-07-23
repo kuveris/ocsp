@@ -1,0 +1,33 @@
+# Keep the build context to what the image actually needs: go.mod, go.sum, and
+# the Go sources. Everything below either busts the layer cache or has no
+# business in a build context.
+
+# Every checkout produces a different .git — packfiles, refs, FETCH_HEAD — so
+# leaving it in the context invalidates `COPY . .` and the compile behind it on
+# every single CI run, which makes the GitHub Actions layer cache useless and
+# actively harmful: each run then writes a fresh full layer set into a shared,
+# size-capped cache, evicting entries that would have helped.
+.git
+.gitignore
+
+# Not used by the build, and changing a workflow should not force a recompile.
+.github
+
+# Private key material. Not a leak in the published image, since only the
+# compiled binary is copied out of the builder stage — but a local `make image`
+# would otherwise bake a developer's real keys into an intermediate layer that
+# lingers in the layer cache.
+certs
+
+# Build and test artefacts.
+coverage.out
+ocsp-responder
+
+# Documentation and local orchestration: editing a README should not invalidate
+# the compile.
+*.md
+docker-compose*.yaml
+.env
+.env.tpl
+examples
+scripts

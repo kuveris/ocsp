@@ -1,14 +1,16 @@
+# Development stack: builds the image from the local Dockerfile instead of
+# pulling the published one, so a source change is one `make dev` away from
+# running. Configuration is read from ./config, same as the production stack.
 services:
   ocsp-responder:
-    image: ${OCSP_IMAGE:-ghcr.io/kuveris/ocsp:latest}
+    build: .
     ports:
       - "${OCSP_PORT:-8080}:8080"
     volumes:
       - ./config:/etc/ocsp-responder:ro
       - ./certs:/certs:ro
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3

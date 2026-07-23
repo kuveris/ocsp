@@ -48,8 +48,15 @@ The repository ships a [`docker-compose.yaml`](docker-compose.yaml):
 git clone https://github.com/kuveris/ocsp.git
 cd ocsp
 # place your certificates in ./certs and edit ./config/ocsp-responder.yaml
-docker compose up
+docker compose up        # or: make up
 ```
+
+This pulls the published image from GHCR. To build from local source instead,
+use `make dev` (equivalently `docker compose -f docker-compose.dev.yaml up
+--build`).
+
+Set `OCSP_PORT` to bind a host port other than 8080, and `OCSP_IMAGE` to pin a
+release tag rather than `latest`.
 
 ### Binary
 
@@ -335,15 +342,18 @@ is an easy thing to forget about for a year.
 ## Development
 
 ```bash
+make check              # full gate: lint + unit + integration, all under -race
 make build              # build the binary
 make test               # unit tests
 make integration-test   # integration tests
 make coverage           # coverage summary
-make coverage-html      # coverage report in a browser
-make lint               # go vet
+make lint               # go vet + golangci-lint
+make dev                # build locally and run via compose
+make help               # list every target
 ```
 
-Requires Go 1.25 or newer.
+Requires Go 1.25 or newer. `make lint` additionally needs
+[golangci-lint](https://golangci-lint.run) v2.
 
 ## License
 

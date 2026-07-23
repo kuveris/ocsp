@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CI now runs on pull requests, including from forks. Previously the workflow
+  triggered only on `push`, so an external contribution produced no CI run at
+  all — no tests, no race detector, no lint, no coverage gate.
 - The `http` status source no longer reports unhealthy until its first
   successful lookup. It previously deadlocked any deployment gating traffic on
   `/health`: the probe withheld the request that would have proven the source

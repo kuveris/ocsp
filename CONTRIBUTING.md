@@ -23,9 +23,9 @@ make help     # every available target
 `make check` is the gate — lint, unit, integration, and a coverage threshold.
 It runs the same checks as CI, with the same coverage number.
 
-Please run it before opening a pull request. CI currently triggers on pushes to
-this repository, so a pull request from a fork will not produce a CI run — your
-local `make check` is the only signal either of us gets.
+Please run it before opening a pull request. CI runs on every pull request,
+including from forks, so you will see the same result there — but finding out
+locally is faster than waiting for a runner.
 
 ## Tests come first
 

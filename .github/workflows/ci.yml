@@ -1,9 +1,15 @@
 name: CI
 
+# `push` is scoped to main rather than "**" so a branch that also has a PR open
+# does not run CI twice; `pull_request` covers everything else, including forks,
+# which produce no push event in this repository and so previously ran nothing
+# at all. `pull_request` (not `pull_request_target`) builds the merge commit
+# with a read-only token, which is the safe form for untrusted contributions.
 on:
   push:
     branches:
-      - "**"
+      - main
+  pull_request:
 
 permissions:
   contents: read

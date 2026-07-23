@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  # Go module dependencies. The tree is small — x/crypto, prometheus, yaml —
+  # but x/crypto is where OCSP parsing and signing live, so a security fix
+  # there matters more than the dependency count suggests.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Action versions are pinned by major tag and will not move on their own.
+  # Without this they quietly age until one is deprecated and CI breaks on an
+  # unrelated commit — the same class of failure as the stale Dockerfile pin.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Base images: golang for the builder, alpine for the runtime. Alpine 3.19
+  # sat two years past its support window before anyone noticed, on a service
+  # that terminates TLS.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(docker)"

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dependabot configuration for Go modules, GitHub Actions, and Docker base
+  images, so pinned versions cannot silently age.
+
 ## [0.1.2] — 2026-07-23
 
 No functional change. The binary and container image are equivalent to 0.1.1;

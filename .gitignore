@@ -6,3 +6,6 @@ certs/*.crl
 certs/*.p12
 /ocsp-responder
 coverage.out
+
+# Rendered from .env.tpl — never committed
+.env

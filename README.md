@@ -149,7 +149,7 @@ A fully annotated example lives at
 
 | Field | If omitted | Description |
 |---|---|---|
-| `server.listen_addr` | `:80` | Address to listen on. The example config uses `0.0.0.0:8080` |
+| `server.listen_addr` | `0.0.0.0:8080` | Address to listen on |
 | `server.tls.enabled` | `false` | Serve OCSP over HTTPS |
 | `server.tls.cert_file` / `key_file` | — | Manual TLS certificate and key |
 | `server.tls.min_version` | `1.2` | Minimum TLS version — `1.3` selects TLS 1.3, anything else is 1.2 |
@@ -169,10 +169,9 @@ A fully annotated example lives at
 Config is validated on load and the process exits on anything invalid, so a
 typo surfaces at startup rather than in production.
 
-Two of these are easy to trip over: leaving `listen_addr` unset binds port 80
-rather than 8080, and the cache is off unless you set both `cache.enabled: true`
-and a non-zero `cache.max_entries`. Starting from the shipped example config
-avoids both.
+One of these is easy to trip over: the cache is off unless you set both
+`cache.enabled: true` and a non-zero `cache.max_entries`. Starting from the
+shipped example config avoids it.
 
 OCSP is served over plain HTTP by design — responses are signed, so the
 transport doesn't need to be confidential. TLS is available if you want it, but

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `server.listen_addr` now defaults to `0.0.0.0:8080` when omitted. Previously
+  an omitted value reached Go's HTTP server as an empty address, which binds
+  the privileged port 80 — neither documented nor intended.
+
 ## [0.1.0] — 2026-07-23
 
 First public release. Pre-1.0: the configuration format may still change, and

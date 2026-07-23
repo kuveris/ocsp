@@ -1,8 +1,10 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -296,5 +298,59 @@ func TestLoad_InvalidYAML(t *testing.T) {
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+// TestValidate_DefaultsListenAddr covers the case where server.listen_addr is
+// omitted. Without a default, an empty Addr reaches http.Server, which binds
+// :80 — a privileged port, and not what the field reference documents.
+func TestValidate_DefaultsListenAddr(t *testing.T) {
+	cases := []struct {
+		name string
+		addr string
+		want string
+	}{
+		{"omitted gets the default", "", DefaultListenAddr},
+		{"explicit value is preserved", "127.0.0.1:19999", "127.0.0.1:19999"},
+		{"port-only value is preserved", ":9999", ":9999"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{
+				Server: ServerConfig{ListenAddr: tc.addr},
+				Signer: SignerConfig{
+					CertFile:         "cert.pem",
+					KeyFile:          "key.pem",
+					IssuerCertFile:   "issuer.pem",
+					ResponseValidity: "24h",
+				},
+				Source: SourceConfig{
+					Type:   "static",
+					Static: StaticSourceConfig{Status: "good"},
+				},
+				Cache: CacheConfig{TTL: "1h"},
+			}
+			if err := c.validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if c.Server.ListenAddr != tc.want {
+				t.Fatalf("ListenAddr = %q, want %q", c.Server.ListenAddr, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultListenAddr_IsNotPrivileged(t *testing.T) {
+	_, port, err := net.SplitHostPort(DefaultListenAddr)
+	if err != nil {
+		t.Fatalf("DefaultListenAddr %q is not a valid host:port: %v", DefaultListenAddr, err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("port %q is not numeric: %v", port, err)
+	}
+	if n < 1024 {
+		t.Fatalf("default port %d is privileged; binding it requires root", n)
 	}
 }

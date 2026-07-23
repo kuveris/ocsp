@@ -101,7 +101,22 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// DefaultListenAddr is used when server.listen_addr is omitted.
+//
+// Without an explicit default, an empty address reaches http.Server, which
+// binds :80 — privileged, and rarely what anyone omitting the field intended.
+// 8080 matches the shipped example config, the Dockerfile's EXPOSE, and both
+// Compose stacks, so the documented port and the actual one agree.
+//
+// This is the port *inside* the container. Host-side collisions are avoided by
+// OCSP_PORT in the Compose files, which is where two projects on one machine
+// would actually contend.
+const DefaultListenAddr = "0.0.0.0:8080"
+
 func (c *Config) validate() error {
+	if c.Server.ListenAddr == "" {
+		c.Server.ListenAddr = DefaultListenAddr
+	}
 	if c.Signer.CertFile == "" {
 		return errors.New("ocsp-responder/config: signer.cert_file must be set")
 	}

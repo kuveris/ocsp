@@ -36,7 +36,8 @@ Both of these come from real defects that shipped:
 - The Dockerfile pin must track `go.mod`. The official Go images set
   `GOTOOLCHAIN=local`, so they will not auto-upgrade to satisfy it, and neither
   local builds nor `setup-go` can catch the mismatch — only the CI Docker build.
-- `server.listen_addr` has no default. Empty means Go binds `:80`, not `:8080`.
+- `server.listen_addr` defaults to `0.0.0.0:8080` via `config.DefaultListenAddr`.
+  It must stay non-privileged — an empty value would let Go bind `:80`.
 - Config is YAML only. There is no env-var configuration path; `OCSP_PORT` and
   `OCSP_IMAGE` are Compose-level only.
 

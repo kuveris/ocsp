@@ -355,6 +355,12 @@ make help               # list every target
 Requires Go 1.25 or newer. `make lint` additionally needs
 [golangci-lint](https://golangci-lint.run) v2.
 
+## Contributing
+
+Bug reports and patches are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+For security issues, please follow [SECURITY.md](SECURITY.md) rather than
+opening a public issue.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

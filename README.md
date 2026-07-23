@@ -218,3 +218,7 @@ make lint     # run go vet
 ```bash
 go test -tags integration ./...
 ```
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

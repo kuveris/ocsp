@@ -388,7 +388,7 @@ func TestFileSource_ReloadLoop_StatError(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	// Wait for reload tick + slack; reloadLoop stat error sets loaded=false.
+	// Wait for reload tick + slack; a read error in the reload loop sets loaded=false.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if !s.Healthy() {
@@ -414,7 +414,8 @@ func TestFileSource_ReloadLoop_FileNotModified(t *testing.T) {
 	}
 	defer s.Stop()
 
-	// Wait for multiple reload ticks; 2nd+ ticks hit !mod.After(last) and skip reload.
+	// Wait for multiple reload ticks; each recomputes the digest, finds it
+	// unchanged, and skips the parse/swap.
 	time.Sleep(80 * time.Millisecond)
 
 	// Source should still be healthy — skipping reload on unchanged file is benign.
@@ -470,5 +471,104 @@ func TestFileSource_CRLWrongIssuer(t *testing.T) {
 
 	if _, err := NewFileSource(path, time.Minute, testIssuerCert); err == nil {
 		t.Fatal("expected error when CRL is signed by a different issuer")
+	}
+}
+
+// TestFileSource_ReloadDetectsBackdatedCRL covers the operational case that
+// mtime-based change detection gets wrong: a CRL swapped in with a timestamp
+// older than the one already loaded, as produced by cp -p, rsync -a,
+// install -p, or a restore from backup. The contents changed, so the responder
+// must pick it up regardless of what the timestamp claims.
+func TestFileSource_ReloadDetectsBackdatedCRL(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "backdated.crl")
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
+		SerialNumber:   big.NewInt(42),
+		RevocationTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+
+	s, err := NewFileSource(path, 20*time.Millisecond, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	if cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert); err != nil || cs.Status != StatusGood {
+		t.Fatalf("expected initial good for 99, got %v err=%v", cs.Status, err)
+	}
+
+	// Replace the CRL, then backdate it an hour into the past.
+	if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
+		SerialNumber:   big.NewInt(42),
+		RevocationTime: time.Now(),
+	}, {
+		SerialNumber:   big.NewInt(99),
+		RevocationTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cs, err := s.GetStatus(context.Background(), big.NewInt(99), testIssuerCert)
+		if err == nil && cs.Status == StatusRevoked {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backdated CRL was never reloaded: status=%v err=%v", cs.Status, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestFileSource_ReloadIsDeterministic guards the flake in MXS-1780 directly:
+// an immediate rewrite frequently lands in the same coarse filesystem
+// timestamp tick as the previous write, so change detection must not depend on
+// mtime advancing.
+func TestFileSource_ReloadIsDeterministic(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "rapid.crl")
+		if err := writeCRL(path, testIssuerCert, testIssuerKey, nil); err != nil {
+			t.Fatalf("writeCRL: %v", err)
+		}
+		s, err := NewFileSource(path, 10*time.Millisecond, testIssuerCert)
+		if err != nil {
+			t.Fatalf("NewFileSource: %v", err)
+		}
+
+		// Rewrite immediately, with no intervening work to push the write into
+		// a later tick.
+		if err := writeCRL(path, testIssuerCert, testIssuerKey, []pkix.RevokedCertificate{{
+			SerialNumber:   big.NewInt(7),
+			RevocationTime: time.Now(),
+		}}); err != nil {
+			s.Stop()
+			t.Fatalf("writeCRL: %v", err)
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		reloaded := false
+		for !reloaded {
+			cs, err := s.GetStatus(context.Background(), big.NewInt(7), testIssuerCert)
+			if err == nil && cs.Status == StatusRevoked {
+				reloaded = true
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		s.Stop()
+		if !reloaded {
+			t.Fatalf("iteration %d: rewrite was never reloaded", i)
+		}
 	}
 }

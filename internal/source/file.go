@@ -3,6 +3,7 @@ package source
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -31,8 +32,17 @@ type FileSource struct {
 	revoked map[string]pkix.RevokedCertificate
 	loaded  atomic.Bool
 
-	lastModMu sync.RWMutex
-	lastMod   time.Time
+	// lastHash is the SHA-256 digest of the CRL bytes currently loaded.
+	//
+	// Change detection deliberately hashes contents rather than comparing
+	// modification times. Filesystem timestamps come from a coarse clock, so
+	// two writes in quick succession routinely share an mtime; and timestamp
+	// preserving copies (cp -p, rsync -a, install -p, backup restores) can
+	// install a new CRL whose mtime is *older* than the loaded one. Either way
+	// an mtime comparison silently keeps serving stale revocation data, which
+	// for an OCSP responder means reporting a revoked certificate as good.
+	lastHashMu sync.RWMutex
+	lastHash   [sha256.Size]byte
 
 	done chan struct{}
 }
@@ -118,19 +128,7 @@ func (s *FileSource) reloadLoop() {
 				}
 				continue
 			}
-			info, err := os.Stat(s.crlPath)
-			if err != nil {
-				s.loaded.Store(false)
-				continue
-			}
-			mod := info.ModTime()
-			s.lastModMu.RLock()
-			last := s.lastMod
-			s.lastModMu.RUnlock()
-			if !mod.After(last) {
-				continue
-			}
-			if err := s.loadFromDisk(); err != nil {
+			if err := s.reloadFromDiskIfChanged(); err != nil {
 				s.loaded.Store(false)
 			}
 		}
@@ -167,24 +165,56 @@ func (s *FileSource) loadFromURL() error {
 }
 
 func (s *FileSource) loadFromDisk() error {
-	info, err := os.Stat(s.crlPath)
+	b, sum, err := s.readCRLFile()
 	if err != nil {
-		return fmt.Errorf("ocsp-responder/source: %w", err)
+		return err
 	}
-	b, err := os.ReadFile(s.crlPath)
+	if err := s.parseCRLBytes(b); err != nil {
+		return err
+	}
+	s.storeHash(sum)
+	return nil
+}
+
+// reloadFromDiskIfChanged parses and swaps in the CRL only when its contents
+// differ from what is currently loaded. Reading the file on every tick is
+// deliberate: it is the only way to detect a change that the filesystem
+// timestamp does not report. CRLs are small and the interval is measured in
+// minutes, so the read is not worth optimising away with a stat pre-check that
+// would reintroduce the bug it replaced.
+func (s *FileSource) reloadFromDiskIfChanged() error {
+	b, sum, err := s.readCRLFile()
 	if err != nil {
-		return fmt.Errorf("ocsp-responder/source: %w", err)
+		return err
+	}
+
+	s.lastHashMu.RLock()
+	unchanged := sum == s.lastHash
+	s.lastHashMu.RUnlock()
+	if unchanged {
+		return nil
 	}
 
 	if err := s.parseCRLBytes(b); err != nil {
 		return err
 	}
-
-	s.lastModMu.Lock()
-	s.lastMod = info.ModTime()
-	s.lastModMu.Unlock()
-
+	s.storeHash(sum)
 	return nil
+}
+
+// readCRLFile reads the CRL file and returns its contents with their digest.
+func (s *FileSource) readCRLFile() ([]byte, [sha256.Size]byte, error) {
+	b, err := os.ReadFile(s.crlPath)
+	if err != nil {
+		return nil, [sha256.Size]byte{}, fmt.Errorf("ocsp-responder/source: %w", err)
+	}
+	return b, sha256.Sum256(b), nil
+}
+
+func (s *FileSource) storeHash(sum [sha256.Size]byte) {
+	s.lastHashMu.Lock()
+	s.lastHash = sum
+	s.lastHashMu.Unlock()
 }
 
 func (s *FileSource) parseCRLBytes(b []byte) error {

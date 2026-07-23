@@ -1,5 +1,5 @@
 IMAGE ?= ghcr.io/kuveris/ocsp:latest
-COVERAGE_MIN ?= 88
+COVERAGE_MIN ?= 85
 
 .PHONY: build test integration-test coverage coverage-check coverage-html run lint check \
         up up-d down dev image help

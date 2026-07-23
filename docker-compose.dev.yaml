@@ -1,11 +1,17 @@
 # Development stack: builds the image from the local Dockerfile instead of
 # pulling the published one, so a source change is one `make dev` away from
 # running. Configuration is read from ./config, same as the production stack.
+#
+# The project name is set explicitly: both files otherwise derive `ocsp` from
+# the directory, so Compose would treat this as the same project and recreate
+# the production container from the local build rather than running alongside.
+name: ocsp-dev
+
 services:
   ocsp-responder:
     build: .
     ports:
-      - "${OCSP_PORT:-8080}:8080"
+      - "${OCSP_DEV_PORT:-8081}:8080"
     volumes:
       - ./config:/etc/ocsp-responder:ro
       - ./certs:/certs:ro

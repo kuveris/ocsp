@@ -8,6 +8,9 @@
 # Host port to publish. Change it if 8080 is taken by another project.
 OCSP_PORT=8080
 
+# Host port for the dev stack, kept distinct so it can run alongside prod.
+OCSP_DEV_PORT=8081
+
 # Image the production stack pulls. Pin a release tag rather than latest for
 # anything you actually depend on.
 OCSP_IMAGE=ghcr.io/kuveris/ocsp:latest

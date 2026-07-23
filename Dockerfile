@@ -1,9 +1,16 @@
-FROM golang:1.25-alpine AS builder
+# The builder deliberately stays on the *build* platform and cross-compiles via
+# GOARCH, rather than running under emulation for each target. Go cross-compiles
+# natively with CGO disabled, so a multi-arch build costs one compile per arch
+# instead of one QEMU-emulated toolchain per arch.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o ocsp-responder ./cmd/ocsp-responder
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w" -o ocsp-responder ./cmd/ocsp-responder
 
 FROM alpine:3.24
 RUN apk --no-cache add ca-certificates && \

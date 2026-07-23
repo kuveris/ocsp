@@ -8,7 +8,7 @@ A small, CA-agnostic OCSP responder ([RFC 6960](https://www.rfc-editor.org/rfc/r
 
 Point it at a CRL file, a URL, or a CA's REST API, give it a delegated signing
 certificate, and it answers OCSP queries about your certificates. It ships as a
-single static binary or a 24 MB container image, with no database and no runtime
+single static binary or a 19 MB container image, with no database and no runtime
 dependencies.
 
 ## What it is

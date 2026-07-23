@@ -26,6 +26,7 @@ type testHTTPObserver struct {
 	retries int
 	errors  int
 	latency int
+	classes []string
 }
 
 func (o *testHTTPObserver) RecordSourceLatency(sourceName string, durationSeconds float64) {
@@ -41,8 +42,17 @@ func (o *testHTTPObserver) RecordSourceRetry(sourceName string) {
 
 func (o *testHTTPObserver) RecordSourceError(sourceName, class string) {
 	_ = sourceName
-	_ = class
 	o.errors++
+	o.classes = append(o.classes, class)
+}
+
+func (o *testHTTPObserver) hasClass(c string) bool {
+	for _, x := range o.classes {
+		if x == c {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonResponse(w http.ResponseWriter, status int, body map[string]interface{}) {
@@ -410,5 +420,118 @@ func TestHTTPSource_RecoversAfterSuccessfulLookup(t *testing.T) {
 	}
 	if !s.Healthy() {
 		t.Fatal("expected healthy again after a successful lookup")
+	}
+}
+
+// TestHTTPSource_RecoversAfterCADownUnderCacheHit covers MXS-1808 defect 2: a
+// source demoted by a CA failure must recover once the CA is back, even when
+// the requested serial is still cached. Without the cache bypass while
+// unhealthy, the cached answer is served without a lookup and /health stays 503
+// forever.
+func TestHTTPSource_RecoversAfterCADownUnderCacheHit(t *testing.T) {
+	var up atomic.Bool
+	up.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "good"})
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", time.Second, ResponseMapping{
+		PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"good"},
+	}, 1, time.Millisecond, time.Hour) // long cache TTL so entries do not expire during the test
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+
+	// Prime the cache for serial 1 while the CA is up.
+	if _, err := s.GetStatus(context.Background(), big.NewInt(1), nil); err != nil {
+		t.Fatalf("initial lookup: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("expected healthy after a good lookup")
+	}
+
+	// CA goes down; a different serial forces a lookup that fails and demotes.
+	up.Store(false)
+	if _, err := s.GetStatus(context.Background(), big.NewInt(2), nil); err == nil {
+		t.Fatal("expected failure while the CA is down")
+	}
+	if s.Healthy() {
+		t.Fatal("expected unhealthy after the CA failed")
+	}
+
+	// CA recovers. A request for the STILL-CACHED serial 1 must re-promote,
+	// which only happens if the cache is bypassed while unhealthy.
+	up.Store(true)
+	if _, err := s.GetStatus(context.Background(), big.NewInt(1), nil); err != nil {
+		t.Fatalf("lookup after recovery: %v", err)
+	}
+	if !s.Healthy() {
+		t.Fatal("expected health to recover on a cached serial once the CA is back")
+	}
+}
+
+// TestHTTPSource_RecordsUnmappedStatus covers MXS-1808 defect 1: a well-formed
+// 200 whose status maps to neither good nor revoked is the misconfiguration
+// signal. It stays healthy (the CA is reachable) but records an "unmapped"
+// source error, distinct from a clean 404.
+func TestHTTPSource_RecordsUnmappedStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"status": "banana"})
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", time.Second, ResponseMapping{
+		PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"good"}, RevokedValues: []string{"revoked"},
+	}, 1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	obs := &testHTTPObserver{}
+	s.SetObserver(obs)
+
+	cs, err := s.GetStatus(context.Background(), big.NewInt(1), nil)
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if cs.Status != StatusUnknown {
+		t.Fatalf("expected unknown for an unmapped value, got %v", cs.Status)
+	}
+	if !s.Healthy() {
+		t.Fatal("a reachable CA answering an unmapped value is still operational; health must stay true")
+	}
+	if !obs.hasClass("unmapped") {
+		t.Fatalf("expected an 'unmapped' source error to be recorded, got classes %v", obs.classes)
+	}
+}
+
+// TestHTTPSource_NotFoundIsCleanUnknown guards against over-recording: a 404 is
+// the CA legitimately saying "I don't have this cert", not a misconfiguration,
+// so it must NOT record an unmapped error.
+func TestHTTPSource_NotFoundIsCleanUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", time.Second, ResponseMapping{
+		PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"good"},
+	}, 1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	obs := &testHTTPObserver{}
+	s.SetObserver(obs)
+
+	cs, _ := s.GetStatus(context.Background(), big.NewInt(1), nil)
+	if cs.Status != StatusUnknown {
+		t.Fatalf("expected unknown for 404, got %v", cs.Status)
+	}
+	if obs.hasClass("unmapped") {
+		t.Fatal("a 404 is a clean unknown, not an unmapped misconfiguration")
 	}
 }

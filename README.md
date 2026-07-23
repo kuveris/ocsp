@@ -364,7 +364,7 @@ restores it.
 | `ocsp_source_requests_total{source,result}` | Counter | Requests to the status source |
 | `ocsp_source_request_duration_seconds{source}` | Histogram | Status source latency |
 | `ocsp_source_retries_total{source}` | Counter | Status source retries |
-| `ocsp_source_errors_total{source,class}` | Counter | Status source errors by class |
+| `ocsp_source_errors_total{source,class}` | Counter | Status source errors by class (`timeout`, `canceled`, `transport_or_upstream`, `unmapped`) |
 
 `ocsp_signer_days_until_expiry` is the one worth alerting on. The responder
 classifies it internally as OK at 30 days or more, warning at 8–29, and

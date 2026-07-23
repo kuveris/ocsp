@@ -152,13 +152,18 @@ func (s *HTTPSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 
 	key := serial.String()
 
-	// Check cache.
-	if v, ok := s.cache.Load(key); ok {
-		entry := v.(*httpCacheEntry)
-		if time.Now().Before(entry.expiresAt) {
-			return entry.status, nil
+	// Check cache — but not while unhealthy. Serving a cached answer without
+	// contacting the CA would never restore health once the CA recovers, so a
+	// source stuck under cache-hit traffic would report 503 forever. While
+	// down, every request drives a fresh lookup that re-promotes on success.
+	if s.healthy.Load() {
+		if v, ok := s.cache.Load(key); ok {
+			entry := v.(*httpCacheEntry)
+			if time.Now().Before(entry.expiresAt) {
+				return entry.status, nil
+			}
+			s.cache.Delete(key)
 		}
-		s.cache.Delete(key)
 	}
 
 	// Build URL: interpolate {serial} with uppercase hex serial number.
@@ -246,6 +251,10 @@ func (s *HTTPSource) fetchOnce(ctx context.Context, url string) (*CertStatus, bo
 		}
 		val, ok := body[s.mapping.StatusField]
 		if !ok {
+			// The configured status field is absent — a likely misconfigured
+			// status_field, or an unexpected response shape. Reachable, but the
+			// answer means nothing, so surface it.
+			s.recordUnmapped()
 			return &CertStatus{Status: StatusUnknown}, false, nil
 		}
 		strVal, _ := val.(string)
@@ -261,9 +270,23 @@ func (s *HTTPSource) fetchOnce(ctx context.Context, url string) (*CertStatus, bo
 				RevocationInfo: &RevocationInfo{RevokedAt: time.Now(), Reason: 0},
 			}, false, nil
 		}
+		// A status value the mapping does not recognise. Distinct from a 404
+		// (the CA saying "not found"): this is the CA answering with something
+		// the operator did not map — good/revoked would be lost as `unknown`
+		// silently otherwise.
+		s.recordUnmapped()
 		return &CertStatus{Status: StatusUnknown}, false, nil
 	default:
 		return nil, true, fmt.Errorf("ocsp-responder/source: unexpected status code %d", resp.StatusCode)
+	}
+}
+
+// recordUnmapped reports that the CA returned a well-formed response the
+// configured mapping could not interpret — the signal for a misconfigured
+// mapping, which /health cannot show because the CA is reachable.
+func (s *HTTPSource) recordUnmapped() {
+	if s.observer != nil {
+		s.observer.RecordSourceError(s.Name(), "unmapped")
 	}
 }
 

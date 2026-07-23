@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `http` status source now recovers health under continuous cache-hit
+  traffic. Previously, once a CA failure demoted it, a request served from the
+  response cache never contacted the CA, so `/health` could stay 503
+  indefinitely even after the CA recovered. While unhealthy the source now
+  bypasses the cache so any request re-probes the CA and re-promotes on success.
+- The `http` source records an `unmapped` class on `ocsp_source_errors_total`
+  when a reachable CA returns a well-formed response whose status maps to
+  neither `good` nor `revoked` (a misconfigured `status_field` or an unmapped
+  status value). This surfaces an all-`unknown` misconfiguration that `/health`
+  cannot show, since the CA is reachable. A 404 remains a clean `unknown`.
+
 - An OCSP response derived from the file source no longer asserts validity
   beyond the CRL it came from. The response `nextUpdate` is now capped at
   `min(response_validity horizon, CRL NextUpdate)`, so a `good` produced from a

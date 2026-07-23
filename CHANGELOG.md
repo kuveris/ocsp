@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DESIGN.md. The behaviour is unchanged; it was previously undocumented, so
   every `openssl ocsp` user saw an unexplained warning.
 
+### Changed
+
+- Unknown keys in the configuration file are now rejected by name instead of
+  being silently discarded. A misspelled field previously took its default with
+  no indication — `cache.enabeld: true` left the cache off, and a typo in a
+  path meant the configured file was not the one in use. **Breaking** for any
+  config carrying extra keys.
+
 ### Fixed
 
 - CI now runs on pull requests, including from forks. Previously the workflow

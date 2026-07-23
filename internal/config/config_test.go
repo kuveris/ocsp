@@ -392,3 +392,50 @@ func TestValidate_ExpiryGrace(t *testing.T) {
 		})
 	}
 }
+
+// TestLoad_RejectsUnknownKeys pins that a misspelled field is an error rather
+// than silently ignored. Silent acceptance is worse than it sounds for a
+// security service: `cache.enabeld: true` means the cache is off, and a
+// misspelled crl_path means the configured CRL is not the one in use, with
+// nothing in the logs distinguishing "unset" from "set and discarded".
+func TestLoad_RejectsUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "typo.yaml")
+	if err := os.WriteFile(path, []byte(`
+server:
+  lissten_addr: "127.0.0.1:18080"
+signer:
+  cert_file: "c"
+  key_file: "k"
+  issuer_cert_file: "i"
+  response_validity: "24h"
+source:
+  type: "static"
+  static:
+    status: "good"
+cache:
+  ttl: "1h"
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected a misspelled field name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "lissten_addr") {
+		t.Fatalf("expected the error to name the offending key, got %v", err)
+	}
+}
+
+// TestLoad_ShippedExampleConfig guards the strictness above against
+// over-rejecting: the config we tell users to start from must still load.
+func TestLoad_ShippedExampleConfig(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config", "ocsp-responder.yaml"))
+	if err != nil {
+		t.Fatalf("the shipped example config must load: %v", err)
+	}
+	if cfg.Server.ListenAddr == "" {
+		t.Fatal("expected the example config to set a listen address")
+	}
+}

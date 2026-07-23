@@ -168,10 +168,10 @@ A fully annotated example lives at
 | `logging.format` | `text` | `json` selects JSON; any other value is text |
 
 Config is validated on load and the process exits on anything invalid, so a
-bad *value* surfaces at startup rather than in production. Note that a
-misspelled *field name* is silently ignored rather than rejected — the loader
-does not reject unknown keys, so `lissten_addr` reads as "unset" and takes the
-default.
+typo surfaces at startup rather than in production. That covers both bad values
+and misspelled field names — an unknown key is rejected by name rather than
+silently ignored, so `lissten_addr` fails the load instead of quietly reading
+as "unset".
 
 One of these is easy to trip over: the cache is off unless you set both
 `cache.enabled: true` and a non-zero `cache.max_entries`. Starting from the

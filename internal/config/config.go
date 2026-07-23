@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -92,8 +93,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("ocsp-responder/config: %w", err)
 	}
 
+	// KnownFields makes a misspelled key an error rather than a silent no-op.
+	// Without it `cache.enabeld: true` leaves the cache off and `crl_path`
+	// under a typo'd parent points at nothing, with the result indistinguishable
+	// from never having set the field — which for a revocation service means
+	// running a configuration nobody intended.
 	var cfg Config
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("ocsp-responder/config: %w", err)
 	}
 

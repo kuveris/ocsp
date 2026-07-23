@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/kuveris/ocsp/internal/responder"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // Metrics holds all registered Prometheus metrics for the OCSP responder.
@@ -56,7 +57,18 @@ func (m *Metrics) RecordCacheMiss() {
 }
 
 // NewMetrics registers and returns all Prometheus metrics.
-func NewMetrics() *Metrics {
+// NewMetrics builds the collector set and the registry that owns it.
+//
+// The registry is per-instance rather than prometheus.DefaultRegisterer: the
+// global one made a second call panic with a duplicate-registration error,
+// which blocked `go test -count>1` on this package entirely and meant the
+// responder could not be constructed twice in one process.
+//
+// Moving off the default registry loses the go_* and process_* collectors it
+// provides for free, so they are registered explicitly — dropping runtime and
+// process telemetry from a long-running service would be a real regression,
+// and a silent one.
+func NewMetrics() (*Metrics, *prometheus.Registry) {
 	m := &Metrics{
 		RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ocsp_requests_total",
@@ -108,7 +120,12 @@ func NewMetrics() *Metrics {
 		}, []string{"source", "class"}),
 	}
 
-	prometheus.MustRegister(
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	reg.MustRegister(
 		m.RequestsTotal,
 		m.RequestDuration,
 		m.CacheEntries,
@@ -121,5 +138,5 @@ func NewMetrics() *Metrics {
 		m.SourceErrors,
 	)
 
-	return m
+	return m, reg
 }

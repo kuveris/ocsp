@@ -54,7 +54,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	metrics := server.NewMetrics()
+	metrics, metricsRegistry := server.NewMetrics()
 	if httpSource, ok := src.(*source.HTTPSource); ok {
 		httpSource.SetObserver(metrics)
 	}
@@ -68,7 +68,7 @@ func main() {
 	}
 	resp := responder.NewResponder(src, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, metrics, metrics.CacheEntries, logger)
 
-	srv := server.New(cfg, resp, sgn, src, metrics, logger)
+	srv := server.New(cfg, resp, sgn, src, metrics, metricsRegistry, logger)
 	if err := srv.Start(ctx); err != nil {
 		logger.Error("server error", "err", err)
 		os.Exit(1)

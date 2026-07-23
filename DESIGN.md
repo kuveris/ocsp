@@ -218,6 +218,19 @@ forge an answer. Cache eviction at `max_entries` drops an arbitrary entry rather
 than the oldest — acceptable because every entry is independently valid and a
 miss costs one source lookup.
 
+### Metrics use a per-instance registry
+
+`NewMetrics` returns its own `*prometheus.Registry` rather than registering on
+the global default. The global one made a second call panic with a duplicate
+registration, which blocked `go test -count>1` on the server package entirely —
+and `-count=N` is how you confirm a flaky test is actually fixed, so the
+package that most needed that check was the one that could not run it.
+
+Moving off the default registry silently drops the `go_*` and `process_*`
+collectors it provides for free, so they are registered explicitly. Losing
+runtime and process telemetry from a long-running service to a refactor would
+be a real regression, and an invisible one.
+
 ### Nonces are not echoed
 
 RFC 6960 §4.4.1 defines a nonce extension that binds a response to its request,

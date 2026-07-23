@@ -41,7 +41,7 @@ func TestServerStart_RejectsInvalidCacheTTL(t *testing.T) {
 }
 
 func TestNew_DefaultLogger(t *testing.T) {
-	srv := New(nil, nil, nil, nil, nil, nil)
+	srv := New(nil, nil, nil, nil, nil, nil, nil)
 	if srv == nil {
 		t.Fatal("expected non-nil *Server")
 	}
@@ -82,7 +82,7 @@ func newTestServer(t *testing.T, tlsCfg config.TLSConfig) (*Server, string) {
 		Server: config.ServerConfig{ListenAddr: addr, TLS: tlsCfg},
 		Cache:  config.CacheConfig{TTL: "1h"},
 	}
-	return New(cfg, r, sgn, src, nil, slog.New(slog.NewTextHandler(io.Discard, nil))), addr
+	return New(cfg, r, sgn, src, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))), addr
 }
 
 // freeLoopbackAddr reserves a port from the kernel and releases it, so tests
@@ -296,7 +296,7 @@ func TestServerStart_ListenError(t *testing.T) {
 		Server: config.ServerConfig{ListenAddr: l.Addr().String()},
 		Cache:  config.CacheConfig{TTL: "1h"},
 	}
-	s := New(cfg, r, sgn, src, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := New(cfg, r, sgn, src, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	err = s.Start(context.Background())
 	if err == nil {

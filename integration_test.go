@@ -168,7 +168,7 @@ func startServer(t *testing.T, tmpDir, listenAddr string, cacheEnabled bool) (ca
 	cacheTTL, _ := time.ParseDuration(cfg.Cache.TTL)
 	resp := responder.NewResponder(fileSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
 
-	srv := server.New(cfg, resp, sgn, fileSrc, nil, nil)
+	srv := server.New(cfg, resp, sgn, fileSrc, nil, nil, nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	go func() {
@@ -356,7 +356,7 @@ func TestOCSPIntegration_HTTPSourceDegradedBehavior(t *testing.T) {
 		t.Fatalf("ParseDuration cache ttl: %v", err)
 	}
 	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
-	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil, nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
@@ -467,7 +467,7 @@ func TestOCSPIntegration_HTTPSourceDegradedBehavior_GETEndpoint(t *testing.T) {
 		t.Fatalf("ParseDuration cache ttl: %v", err)
 	}
 	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
-	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil, nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
@@ -561,7 +561,7 @@ func TestOCSPIntegration_HTTPSourceIntermittentFailures(t *testing.T) {
 		t.Fatalf("ParseDuration cache ttl: %v", err)
 	}
 	resp := responder.NewResponder(httpSrc, sgn, cacheTTL, cfg.Cache.MaxEntries, cfg.Cache.Enabled, nil, nil, nil)
-	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil)
+	srv := server.New(cfg, resp, sgn, httpSrc, nil, nil, nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()

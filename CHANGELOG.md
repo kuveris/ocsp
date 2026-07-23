@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prometheus collectors are registered on a per-instance registry instead of
+  the global default, so the responder can be constructed more than once in a
+  process. `/metrics` output is unchanged, including the `go_*` and `process_*`
+  collectors, which are now registered explicitly.
 - CI now runs on pull requests, including from forks. Previously the workflow
   triggered only on `push`, so an external contribution produced no CI run at
   all — no tests, no race detector, no lint, no coverage gate.

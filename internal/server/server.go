@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
@@ -20,6 +21,7 @@ import (
 
 type Server struct {
 	cfg       *config.Config
+	registry  *prometheus.Registry
 	responder *responder.Responder
 	signer    *signer.Signer
 	source    source.Source
@@ -27,11 +29,11 @@ type Server struct {
 	logger    *slog.Logger
 }
 
-func New(cfg *config.Config, r *responder.Responder, sgn *signer.Signer, src source.Source, metrics *Metrics, logger *slog.Logger) *Server {
+func New(cfg *config.Config, r *responder.Responder, sgn *signer.Signer, src source.Source, metrics *Metrics, registry *prometheus.Registry, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, responder: r, signer: sgn, source: src, metrics: metrics, logger: logger}
+	return &Server{cfg: cfg, responder: r, signer: sgn, source: src, metrics: metrics, registry: registry, logger: logger}
 }
 
 // Start registers routes and blocks until ctx is cancelled.
@@ -46,7 +48,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
 	mux.HandleFunc("GET /{request}", ServeOCSP(s.responder, cacheTTL, s.metrics, s.logger))
 	mux.HandleFunc("GET /health", ServeHealth(s.signer, s.source))
-	mux.Handle("GET /metrics", promhttp.Handler())
+	// Serve this instance's registry rather than the global default, so
+	// /metrics reflects the collectors this server actually owns.
+	metricsHandler := promhttp.Handler()
+	if s.registry != nil {
+		metricsHandler = promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{})
+	}
+	mux.Handle("GET /metrics", metricsHandler)
 
 	httpServer := &http.Server{
 		Addr:         s.cfg.Server.ListenAddr,

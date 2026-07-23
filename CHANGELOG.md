@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-23
+
+### Added
+
+- `source.file.expiry_grace` keeps a CRL usable for a configured duration past
+  its `NextUpdate`, for CAs that publish late. Defaults to strict.
+
+- Dependabot configuration for Go modules, GitHub Actions, and Docker base
+  images, so pinned versions cannot silently age.
+
+### Changed
+
+- Unknown keys in the configuration file are now rejected by name instead of
+  being silently discarded. A misspelled field previously took its default with
+  no indication — `cache.enabeld: true` left the cache off, and a typo in a
+  path meant the configured file was not the one in use. **Breaking** for any
+  config carrying extra keys.
+
 ### Fixed
 
 - The responder cache now expires each entry at the earlier of its configured
@@ -39,53 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `min(response_validity horizon, CRL NextUpdate)`, so a `good` produced from a
   nearly-expired CRL is not cached by clients for the full `response_validity`
   window. The `http` and `static` sources are unaffected.
-
-### Security
-
-- Updated the Prometheus client and its Go dependency graph to patched
-  releases. This removes the reachable `golang.org/x/text` normalization
-  infinite loop (`GO-2026-5970`), the `golang.org/x/net/idna` Punycode
-  validation flaw (`GO-2026-5026`), and the outstanding Dependabot findings in
-  `golang.org/x/crypto`, `golang.org/x/net`, and protobuf.
-
-- Expired CRLs are no longer used. Expiry is checked live on every lookup, so a
-  CRL past its `NextUpdate` takes the file source unhealthy and the responder
-  answers `unknown` — whether it was already expired at load or expires later
-  while the file on disk never changes. Previously a stalled CRL publisher meant
-  every certificate revoked since the last publication was reported `good`,
-  indefinitely, with `/health` still green. An already-expired CRL at startup is
-  now a transient condition the responder recovers from, not a fatal error.
-
-### Added
-
-- `source.file.expiry_grace` keeps a CRL usable for a configured duration past
-  its `NextUpdate`, for CAs that publish late. Defaults to strict.
-
-### Documentation
-
-- Recorded that RFC 6960 nonces are deliberately not echoed, with the caching
-  tradeoff and the resulting replay window, in README, SECURITY.md and
-  DESIGN.md. The behaviour is unchanged; it was previously undocumented, so
-  every `openssl ocsp` user saw an unexplained warning.
-
-### Changed
-
-- Unknown keys in the configuration file are now rejected by name instead of
-  being silently discarded. A misspelled field previously took its default with
-  no indication — `cache.enabeld: true` left the cache off, and a typo in a
-  path meant the configured file was not the one in use. **Breaking** for any
-  config carrying extra keys.
-
-### Security
-
-- Release workflow actions on the publishing jobs are pinned to commit SHAs
-  rather than mutable major tags, and the publish job now builds the exact
-  commit the test job validated rather than re-resolving the tag.
-- Published images now carry an SBOM and full build provenance.
-- All actions on the release workflow are SHA-pinned, not only the publishing
-  jobs.
-
-### Fixed
 
 - Release notes now advertise the correct image tag. `docker/metadata-action`
   strips the leading `v`, so the notes pointed at `ghcr.io/kuveris/ocsp:v0.1.2`
@@ -123,10 +94,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded, so a responder that dropped to `unknown` gave an operator a 503
   and nothing else to work from.
 
-### Added
+### Security
 
-- Dependabot configuration for Go modules, GitHub Actions, and Docker base
-  images, so pinned versions cannot silently age.
+- Updated the Prometheus client and its Go dependency graph to patched
+  releases. This removes the reachable `golang.org/x/text` normalization
+  infinite loop (`GO-2026-5970`), the `golang.org/x/net/idna` Punycode
+  validation flaw (`GO-2026-5026`), and the outstanding Dependabot findings in
+  `golang.org/x/crypto`, `golang.org/x/net`, and protobuf.
+
+- Expired CRLs are no longer used. Expiry is checked live on every lookup, so a
+  CRL past its `NextUpdate` takes the file source unhealthy and the responder
+  answers `unknown` — whether it was already expired at load or expires later
+  while the file on disk never changes. Previously a stalled CRL publisher meant
+  every certificate revoked since the last publication was reported `good`,
+  indefinitely, with `/health` still green. An already-expired CRL at startup is
+  now a transient condition the responder recovers from, not a fatal error.
+
+- Release workflow actions on the publishing jobs are pinned to commit SHAs
+  rather than mutable major tags, and the publish job now builds the exact
+  commit the test job validated rather than re-resolving the tag.
+- Published images now carry an SBOM and full build provenance.
+- All actions on the release workflow are SHA-pinned, not only the publishing
+  jobs.
+
+### Documentation
+
+- Recorded that RFC 6960 nonces are deliberately not echoed, with the caching
+  tradeoff and the resulting replay window, in README, SECURITY.md and
+  DESIGN.md. The behaviour is unchanged; it was previously undocumented, so
+  every `openssl ocsp` user saw an unexplained warning.
 
 ## [0.1.2] — 2026-07-23
 
@@ -203,7 +199,8 @@ the responder has not yet been run against a production PKI.
 - The OCSP signing key is never logged, at any level.
 - Request bodies are capped at 10 KB.
 
-[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kuveris/ocsp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/kuveris/ocsp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kuveris/ocsp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kuveris/ocsp/releases/tag/v0.1.0

@@ -5,6 +5,9 @@ on:
     branches:
       - "**"
 
+permissions:
+  contents: read
+
 env:
   # Pinned deliberately: an unpinned linter turns an upstream release into a
   # surprise red build on an unrelated commit.
@@ -73,6 +76,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # QEMU is needed despite the Go build cross-compiling: the runtime stage's
+      # `apk add` runs under the target architecture.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -87,5 +95,9 @@ jobs:
         with:
           context: .
           push: false
+          # Match the platforms the release workflow publishes. Building only
+          # the runner's architecture here means an arm64-only failure would
+          # first surface after a tag was pushed, which is the worst moment.
+          platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
 
+# Least privilege by default; the publish and release jobs widen this for
+# themselves only.
+permissions:
+  contents: read
+
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
   COVERAGE_MIN: "85"

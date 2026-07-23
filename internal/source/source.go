@@ -27,6 +27,11 @@ type RevocationInfo struct {
 type CertStatus struct {
 	Status         Status
 	RevocationInfo *RevocationInfo
+	// SourceNextUpdate is when the underlying data (e.g. a CRL) stops being
+	// authoritative. Zero when the source has no such notion (http, static) or
+	// the CRL carries no NextUpdate. The signer caps the response nextUpdate at
+	// this value so a response never outlives the data it was derived from.
+	SourceNextUpdate time.Time
 }
 
 // Source is the pluggable interface for certificate status backends.

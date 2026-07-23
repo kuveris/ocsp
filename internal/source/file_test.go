@@ -950,3 +950,34 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// TestFileSource_ReportsCRLNextUpdate confirms the CRL's NextUpdate reaches
+// CertStatus, so the signer can cap the response validity (MXS-1809). Without
+// this the cap has nothing to cap against.
+func TestFileSource_ReportsCRLNextUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nu.crl")
+	nextUpdate := time.Now().Add(90 * time.Minute).UTC().Truncate(time.Second)
+	if err := writeCRLWithNextUpdate(path, testIssuerCert, testIssuerKey, nextUpdate, []pkix.RevokedCertificate{{
+		SerialNumber:   big.NewInt(42),
+		RevocationTime: time.Now(),
+	}}); err != nil {
+		t.Fatalf("writeCRL: %v", err)
+	}
+	s, err := NewFileSource(path, time.Minute, testIssuerCert)
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	defer s.Stop()
+
+	// Both a good and a revoked answer must carry the CRL's NextUpdate.
+	for _, serial := range []*big.Int{big.NewInt(99), big.NewInt(42)} {
+		cs, err := s.GetStatus(context.Background(), serial, testIssuerCert)
+		if err != nil {
+			t.Fatalf("GetStatus(%v): %v", serial, err)
+		}
+		if !cs.SourceNextUpdate.Equal(nextUpdate) {
+			t.Fatalf("serial %v: SourceNextUpdate = %v, want %v", serial, cs.SourceNextUpdate, nextUpdate)
+		}
+	}
+}

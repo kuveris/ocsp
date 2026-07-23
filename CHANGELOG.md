@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An OCSP response derived from the file source no longer asserts validity
+  beyond the CRL it came from. The response `nextUpdate` is now capped at
+  `min(response_validity horizon, CRL NextUpdate)`, so a `good` produced from a
+  nearly-expired CRL is not cached by clients for the full `response_validity`
+  window. The `http` and `static` sources are unaffected.
+
 ### Security
 
 - Expired CRLs are no longer used. Expiry is checked live on every lookup, so a

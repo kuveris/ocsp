@@ -87,12 +87,16 @@ func newTestSigner(t *testing.T) *testSigner {
 
 func (s *testSigner) IssuerCert() *x509.Certificate { return s.issuer }
 
-func (s *testSigner) CreateResponse(serial *big.Int, st source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error) {
+func (s *testSigner) CreateResponse(serial *big.Int, st source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error) {
+	nextUpdate := thisUpdate.Add(s.validity)
+	if !sourceNextUpdate.IsZero() && sourceNextUpdate.Before(nextUpdate) {
+		nextUpdate = sourceNextUpdate
+	}
 	r := xocsp.Response{
 		Status:       xocsp.Unknown,
 		SerialNumber: serial,
 		ThisUpdate:   thisUpdate,
-		NextUpdate:   thisUpdate.Add(s.validity),
+		NextUpdate:   nextUpdate,
 		IssuerHash:   crypto.SHA1,
 		Certificate:  s.signerCert,
 	}
@@ -362,7 +366,7 @@ func TestValidateIssuerBinding_NilRequest(t *testing.T) {
 type failingSigner struct{ issuer *x509.Certificate }
 
 func (f *failingSigner) IssuerCert() *x509.Certificate { return f.issuer }
-func (f *failingSigner) CreateResponse(_ *big.Int, _ source.Status, _ *source.RevocationInfo, _ time.Time) ([]byte, error) {
+func (f *failingSigner) CreateResponse(_ *big.Int, _ source.Status, _ *source.RevocationInfo, _ time.Time, _ time.Time) ([]byte, error) {
 	return nil, fmt.Errorf("signer error")
 }
 

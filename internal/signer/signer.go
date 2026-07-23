@@ -93,7 +93,7 @@ func verifySignerTrust(cert, issuer *x509.Certificate) error {
 	return nil
 }
 
-func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error) {
+func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error) {
 	var ocspStatus int
 	var revokedAt time.Time
 	reason := 0
@@ -113,11 +113,20 @@ func (s *Signer) CreateResponse(serial *big.Int, status source.Status, revInfo *
 		return nil, fmt.Errorf("ocsp-responder/signer: unsupported status %v", status)
 	}
 
+	// Cap the response validity at the source's own NextUpdate (the CRL's), so
+	// a response never asserts freshness beyond the data it was derived from. A
+	// zero sourceNextUpdate (http/static, or a CRL without NextUpdate) means no
+	// cap.
+	nextUpdate := thisUpdate.Add(s.validity)
+	if !sourceNextUpdate.IsZero() && sourceNextUpdate.Before(nextUpdate) {
+		nextUpdate = sourceNextUpdate
+	}
+
 	template := xocsp.Response{
 		Status:           ocspStatus,
 		SerialNumber:     serial,
 		ThisUpdate:       thisUpdate,
-		NextUpdate:       thisUpdate.Add(s.validity),
+		NextUpdate:       nextUpdate,
 		IssuerHash:       crypto.SHA1,
 		Certificate:      s.cert,
 		RevokedAt:        revokedAt,

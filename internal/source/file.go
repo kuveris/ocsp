@@ -162,6 +162,7 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 
 	s.mu.RLock()
 	rev, ok := s.revoked[serial.String()]
+	nextUpdate := s.nextUpdate
 	s.mu.RUnlock()
 
 	if ok {
@@ -182,10 +183,11 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 				RevokedAt: rev.RevocationTime,
 				Reason:    reason,
 			},
+			SourceNextUpdate: nextUpdate,
 		}, nil
 	}
 
-	return &CertStatus{Status: StatusGood}, nil
+	return &CertStatus{Status: StatusGood, SourceNextUpdate: nextUpdate}, nil
 }
 
 func (s *FileSource) reloadLoop() {

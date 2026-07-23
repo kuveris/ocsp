@@ -295,7 +295,7 @@ func TestSigner_CreateResponse_UnsupportedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	if _, err := s.CreateResponse(big.NewInt(1), source.Status(99), nil, time.Now()); err == nil {
+	if _, err := s.CreateResponse(big.NewInt(1), source.Status(99), nil, time.Now(), time.Time{}); err == nil {
 		t.Fatal("expected error for unsupported status")
 	}
 }
@@ -305,7 +305,7 @@ func TestSigner_CreateResponse_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now())
+	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestSigner_CreateResponse_Revoked(t *testing.T) {
 		t.Fatalf("NewSigner: %v", err)
 	}
 	now := time.Now()
-	der, err := s.CreateResponse(big.NewInt(42), source.StatusRevoked, &source.RevocationInfo{RevokedAt: now, Reason: 1}, now)
+	der, err := s.CreateResponse(big.NewInt(42), source.StatusRevoked, &source.RevocationInfo{RevokedAt: now, Reason: 1}, now, time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestSigner_SignatureVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	der, err := s.CreateResponse(big.NewInt(123), source.StatusGood, nil, time.Now())
+	der, err := s.CreateResponse(big.NewInt(123), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestSigner_CreateResponse_ECDSASigner(t *testing.T) {
 		t.Fatalf("NewSigner: %v", err)
 	}
 
-	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now())
+	der, err := s.CreateResponse(big.NewInt(99), source.StatusGood, nil, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -643,4 +643,63 @@ func (r *recordingGauge) Set(v float64) {
 	r.recorded = v
 	r.mu.Unlock()
 	r.Gauge.Set(v)
+}
+
+// TestCreateResponse_CapsNextUpdateAtSourceNextUpdate covers MXS-1809: a
+// response derived from a CRL that is itself about to expire must not assert
+// validity beyond the CRL's own NextUpdate, or a client caches `good` for the
+// full response_validity window even though the underlying data expired sooner.
+func TestCreateResponse_CapsNextUpdateAtSourceNextUpdate(t *testing.T) {
+	s, err := NewSigner(ocspCertPath, ocspKeyPath, issuerCertPath, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	now := time.Now()
+
+	t.Run("caps when the CRL expires before the validity horizon", func(t *testing.T) {
+		crlNextUpdate := now.Add(10 * time.Minute) // sooner than 24h
+		der, err := s.CreateResponse(big.NewInt(1), source.StatusGood, nil, now, crlNextUpdate)
+		if err != nil {
+			t.Fatalf("CreateResponse: %v", err)
+		}
+		resp, err := xocsp.ParseResponse(der, nil)
+		if err != nil {
+			t.Fatalf("ParseResponse: %v", err)
+		}
+		// Allow a second of slack for round-trip truncation.
+		if resp.NextUpdate.After(crlNextUpdate.Add(time.Second)) {
+			t.Fatalf("response nextUpdate %v exceeds the CRL's %v", resp.NextUpdate, crlNextUpdate)
+		}
+	})
+
+	t.Run("uses the validity horizon when the CRL outlives it", func(t *testing.T) {
+		crlNextUpdate := now.Add(72 * time.Hour) // later than 24h
+		der, err := s.CreateResponse(big.NewInt(2), source.StatusGood, nil, now, crlNextUpdate)
+		if err != nil {
+			t.Fatalf("CreateResponse: %v", err)
+		}
+		resp, err := xocsp.ParseResponse(der, nil)
+		if err != nil {
+			t.Fatalf("ParseResponse: %v", err)
+		}
+		horizon := now.Add(24 * time.Hour)
+		if resp.NextUpdate.Before(horizon.Add(-time.Minute)) || resp.NextUpdate.After(horizon.Add(time.Minute)) {
+			t.Fatalf("expected nextUpdate near the 24h horizon %v, got %v", horizon, resp.NextUpdate)
+		}
+	})
+
+	t.Run("zero source nextUpdate means no cap", func(t *testing.T) {
+		der, err := s.CreateResponse(big.NewInt(3), source.StatusGood, nil, now, time.Time{})
+		if err != nil {
+			t.Fatalf("CreateResponse: %v", err)
+		}
+		resp, err := xocsp.ParseResponse(der, nil)
+		if err != nil {
+			t.Fatalf("ParseResponse: %v", err)
+		}
+		horizon := now.Add(24 * time.Hour)
+		if resp.NextUpdate.Before(horizon.Add(-time.Minute)) {
+			t.Fatalf("a zero source nextUpdate must not cap; got %v, want ~%v", resp.NextUpdate, horizon)
+		}
+	})
 }

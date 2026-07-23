@@ -43,7 +43,7 @@ type Responder struct {
 
 type signer interface {
 	IssuerCert() *x509.Certificate
-	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time) ([]byte, error)
+	CreateResponse(serial *big.Int, status source.Status, revInfo *source.RevocationInfo, thisUpdate time.Time, sourceNextUpdate time.Time) ([]byte, error)
 }
 
 func NewResponder(src source.Source, sgn signer, cacheTTL time.Duration, maxEntries int, cacheEnabled bool, metrics MetricsRecorder, cacheEntriesGauge prometheus.Gauge, logger *slog.Logger) *Responder {
@@ -96,10 +96,12 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 
 	status := source.StatusUnknown
 	var revInfo *source.RevocationInfo
+	var sourceNextUpdate time.Time
 	cs, srcErr := r.source.GetStatus(ctx, serial, r.signer.IssuerCert())
 	if srcErr == nil && cs != nil {
 		status = cs.Status
 		revInfo = cs.RevocationInfo
+		sourceNextUpdate = cs.SourceNextUpdate
 	}
 	if srcErr != nil {
 		status = source.StatusUnknown
@@ -114,7 +116,7 @@ func (r *Responder) Handle(ctx context.Context, requestDER []byte) ([]byte, erro
 		r.metrics.RecordSourceRequest(r.source.Name(), result)
 	}
 
-	der, err := r.signer.CreateResponse(serial, status, revInfo, time.Now())
+	der, err := r.signer.CreateResponse(serial, status, revInfo, time.Now(), sourceNextUpdate)
 	if err != nil {
 		return nil, fmt.Errorf("ocsp-responder/responder: %w", err)
 	}

@@ -106,10 +106,16 @@ ocsp/
 ├── config/ocsp-responder.yaml     # Annotated example configuration
 ├── examples/systemd/              # Unit file for non-container deployment
 ├── integration_test.go            # End-to-end tests (build tag: integration)
+├── scripts/coverage-check.sh      # Coverage threshold gate
+├── .github/workflows/             # CI and release pipelines
 ├── .golangci.yml                  # Lint configuration
+├── Makefile                       # Standard targets; `make check` is the gate
 ├── Dockerfile                     # Multi-stage, non-root runtime
-└── docker-compose.yaml
+└── docker-compose.yaml            # Plus docker-compose.dev.yaml
 ```
+
+Root also carries the usual project documents: `README.md`, `CHANGELOG.md`,
+`CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `CLAUDE.md`, and `.env.tpl`.
 
 Every package under `internal/` is unexported by construction — this is a
 service, not a library, and nothing here is a stable public API.
@@ -119,7 +125,8 @@ service, not a library, and nothing here is a stable public API.
 ## 4. Core interface
 
 ```go
-// internal/source/source.go
+// Shape of internal/source/source.go, annotated. The comments below state
+// the contract; the file itself carries the declarations.
 
 // Status represents the revocation status of a certificate.
 type Status int
@@ -229,6 +236,9 @@ GET /health
   → 200 + {"status":"ok","signer_valid":true,"signer_expires_in_days":312,
            "signer_expiry_status":"ok","source":"file","source_healthy":true}
   → 503 if the signer is invalid/expired or the source is unhealthy
+  → note: the `http` source reports unhealthy until its first successful
+    lookup, so a freshly started responder answers 503 until it serves a
+    request. The `file` source loads at startup and is unaffected.
 
 GET /metrics
   → Prometheus exposition format
@@ -290,7 +300,8 @@ All three phases are complete.
 ## 9. Security notes
 
 - The OCSP signing key is never logged, at any level
-- `certs/` is gitignored in full
+- Key and certificate extensions under `certs/` are gitignored; other
+  filenames there are not
 - Signing key file permissions: `600`, owned by the service user
 - On source error: return `StatusUnknown`, **never** `StatusGood`
 - Requests are validated against configured issuer bindings before lookup
@@ -328,7 +339,7 @@ status API works with the `http` source and a suitable response mapping.
 
 ## 11. Testing
 
-Roughly 158 tests across six packages, plus an end-to-end suite behind the
+162 tests across the six Go packages, plus an end-to-end suite behind the
 `integration` build tag.
 
 | Package | Focus |
@@ -337,7 +348,8 @@ Roughly 158 tests across six packages, plus an end-to-end suite behind the
 | `internal/source` | CRL parsing (PEM/DER), reload, issuer verification, HTTP source mapping, retry, error classification |
 | `internal/signer` | Cert/key loading (RSA and ECDSA, PKCS#1 and PKCS#8), EKU and trust validation, expiry thresholds |
 | `internal/responder` | Status handling, issuer binding, cache behaviour, fail-closed on source errors |
-| `internal/server` | Handlers for POST/GET/health, request limits, GET encodings, metrics recording |
+| `internal/server` | Handlers for POST/GET/health, request limits, GET encodings, TLS/ACME listener wiring, graceful shutdown, metrics |
+| `cmd/ocsp-responder` | Logger construction and source wiring; `main()` itself is excluded as entrypoint boilerplate |
 | `integration_test.go` | Full server over real HTTP: POST, GET, health, cache, reload |
 
 Two conventions worth preserving:

@@ -21,8 +21,11 @@ make help     # every available target
 ```
 
 `make check` is the gate — lint, unit, integration, and a coverage threshold.
-If it fails, CI will fail too, because both run the same script with the same
-number.
+It runs the same checks as CI, with the same coverage number.
+
+Please run it before opening a pull request. CI currently triggers on pushes to
+this repository, so a pull request from a fork will not produce a CI run — your
+local `make check` is the only signal either of us gets.
 
 ## Tests come first
 
@@ -56,8 +59,9 @@ probably several commits.
 ## Changelog
 
 User-visible changes get an entry under `[Unreleased]` in
-[CHANGELOG.md](CHANGELOG.md) in the same commit as the change. Internal
-refactors do not.
+[CHANGELOG.md](CHANGELOG.md) in the same commit as the change. Pure internal
+refactors do not. Changes to the build, CI, or test tooling are a judgement
+call — record them if someone building or packaging this would want to know.
 
 ## Security
 

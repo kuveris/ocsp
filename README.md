@@ -83,12 +83,12 @@ curl http://localhost:8080/health
 
 ```json
 {
-  "status": "ok",
-  "signer_valid": true,
   "signer_expires_in_days": 312,
   "signer_expiry_status": "ok",
+  "signer_valid": true,
   "source": "file",
-  "source_healthy": true
+  "source_healthy": true,
+  "status": "ok"
 }
 ```
 
@@ -107,7 +107,7 @@ boot on a misconfiguration rather than serving bad answers.
 | File | Requirement |
 |---|---|
 | `signer.cert_file` | Must carry `extendedKeyUsage = OCSPSigning`, and must be signed by the issuer below |
-| `signer.key_file` | The matching private key (PKCS#8 or PKCS#1, RSA or ECDSA) |
+| `signer.key_file` | The matching private key: PKCS#8 (RSA or ECDSA) or PKCS#1 (RSA). SEC1 EC keys (`BEGIN EC PRIVATE KEY`, from `openssl ecparam -genkey`) are **not** accepted — convert with `openssl pkcs8 -topk8 -nocrypt` |
 | `signer.issuer_cert_file` | The CA that issued the certificates you're answering for. Must be a CA certificate with the `keyCertSign` key usage |
 
 The signing certificate is a **delegated responder**: the issuing CA signs it,
@@ -167,7 +167,10 @@ A fully annotated example lives at
 | `logging.format` | `text` | `json` selects JSON; any other value is text |
 
 Config is validated on load and the process exits on anything invalid, so a
-typo surfaces at startup rather than in production.
+bad *value* surfaces at startup rather than in production. Note that a
+misspelled *field name* is silently ignored rather than rejected — the loader
+does not reject unknown keys, so `lissten_addr` reads as "unset" and takes the
+default.
 
 One of these is easy to trip over: the cache is off unless you set both
 `cache.enabled: true` and a non-zero `cache.max_entries`. Starting from the
@@ -221,7 +224,10 @@ source:
       revoked_values: ["revoked", "suspended"]
 ```
 
-`{serial}` is replaced with the certificate serial from the OCSP request.
+`{serial}` is replaced with the certificate serial from the OCSP request,
+formatted as **uppercase hexadecimal with no leading zeros**. A CA API that
+expects decimal or lowercase will 404, which the source maps to `unknown` for
+every certificate.
 Anything not matching `good_values` or `revoked_values` becomes `unknown`.
 
 ### `static` — fixed answer
@@ -282,7 +288,9 @@ and a suitable `response_mapping`. Any CA that publishes a CRL works with the
 | `GET /health` | Health check — `200` when healthy, `503` when not |
 | `GET /metrics` | Prometheus metrics |
 
-Request bodies are capped at 10 KB; real OCSP requests are well under 1 KB.
+Requests are capped at 10 KB of DER on both methods — the POST body directly,
+the GET path at its base64-encoded equivalent. Real OCSP requests are well
+under 1 KB.
 
 `GET` follows RFC 6960 Appendix A.1.1 — the URL-encoding of the standard base64
 encoding of the DER request. Unpadded standard base64 and both base64url forms
@@ -293,9 +301,14 @@ are also accepted, so a client that picks a different variant still works.
 ### Health
 
 `GET /health` returns `503` and `"status": "unhealthy"` when the signing
-certificate is invalid or expired, or when the status source is unhealthy — a
-CRL that failed to load, or a CA API that isn't answering. Suitable as a
-container health check or load-balancer probe.
+certificate is invalid or expired, or when the status source is unhealthy.
+
+> **Caveat with the `http` source:** it reports unhealthy until its *first
+> successful lookup*, not from startup. A freshly started responder therefore
+> answers `503` until it serves a real OCSP request. If you gate traffic on
+> this probe — a load balancer, or `depends_on: service_healthy` — it will
+> never become healthy, because the request that would make it healthy never
+> arrives. The `file` source is unaffected: it loads its CRL at startup.
 
 ### Metrics
 
@@ -313,9 +326,10 @@ container health check or load-balancer probe.
 | `ocsp_source_errors_total{source,class}` | Counter | Status source errors by class |
 
 `ocsp_signer_days_until_expiry` is the one worth alerting on. The responder
-classifies it internally as OK above 30 days, warning at 8–30, and critical
-below 8 — an expired signing certificate takes the whole service down, and it
-is an easy thing to forget about for a year.
+classifies it internally as OK at 30 days or more, warning at 8–29, and
+critical below 8 — an expired signing certificate does not stop the process — it keeps
+serving responses that clients reject, which is an outage that looks like
+uptime. Easy to forget about for a year.
 
 ## Security notes
 
@@ -336,7 +350,9 @@ is an easy thing to forget about for a year.
   window, so caching them cannot forge an answer. Note that eviction at
   `max_entries` drops an arbitrary entry, not the oldest or least-used.
 - **Key permissions** are your responsibility: `chmod 600`, owned by the service
-  user. `certs/` is gitignored — don't commit key material.
+  user. Key and certificate *extensions* under `certs/` are gitignored
+  (`*.key`, `*.crt`, `*.pem`, `*.der`, `*.crl`, `*.p12`) — other filenames
+  there are not, so avoid `privkey` or `signer.key.bak`.
 
 ## Development
 
@@ -349,7 +365,7 @@ make coverage           # coverage summary
 make coverage-check     # fail if coverage drops below the threshold
 make lint               # go vet + golangci-lint
 make dev                # build locally and run via compose
-make help               # list every target
+make help               # list the available targets
 ```
 
 Requires Go 1.25 or newer. `make lint` additionally needs

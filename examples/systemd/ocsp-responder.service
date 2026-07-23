@@ -1,6 +1,6 @@
 [Unit]
 Description=OCSP Responder
-Documentation=https://github.com/hartmann-it/ocsp-responder
+Documentation=https://github.com/kuveris/ocsp
 After=network.target
 
 [Service]
@@ -15,7 +15,10 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/ocsp-responder
+# Optional: systemd fails the unit (226/NAMESPACE) if a ReadWritePaths
+# target is missing. Logs go to stdout and therefore the journal, so this
+# is only needed if you redirect them to a file.
+#ReadWritePaths=/var/log/ocsp-responder
 ReadOnlyPaths=/etc/ocsp-responder /etc/ssl/certs
 
 [Install]

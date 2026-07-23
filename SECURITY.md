@@ -54,6 +54,8 @@ cause real incidents:
 
 - **Signing key permissions.** `600`, owned by the service user. The key is
   never logged, but file permissions are not something this project can enforce.
-- **Signing certificate expiry.** An expired signer takes the whole responder
-  down. `ocsp_signer_days_until_expiry` is exported for exactly this reason —
-  alert on it.
+- **Signing certificate expiry.** An expired signer does not stop the process:
+  it keeps serving signed responses that every client will reject, while
+  `/health` reports unhealthy. The practical effect is a total outage that the
+  logs describe only as a warning. `ocsp_signer_days_until_expiry` is exported
+  for exactly this reason — alert on it.

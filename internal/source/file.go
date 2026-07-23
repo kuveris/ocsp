@@ -61,6 +61,11 @@ type FileSource struct {
 	// reload at the boundary between snapshot capture and result construction.
 	statusSnapshotHook func()
 
+	// statusBeforeSnapshotHook and statusNow let tests deterministically model
+	// a goroutine being delayed immediately before it acquires the CRL snapshot.
+	statusBeforeSnapshotHook func()
+	statusNow                func() time.Time
+
 	done chan struct{}
 }
 
@@ -190,8 +195,14 @@ func (s *FileSource) GetStatus(ctx context.Context, serial *big.Int, issuer *x50
 	// immediately after this lock is released, but this answer remains
 	// internally consistent: it never validates one generation and returns
 	// status from another.
-	now := time.Now()
+	if s.statusBeforeSnapshotHook != nil {
+		s.statusBeforeSnapshotHook()
+	}
 	s.mu.RLock()
+	now := time.Now()
+	if s.statusNow != nil {
+		now = s.statusNow()
+	}
 	thisUpdate, nextUpdate := s.thisUpdate, s.nextUpdate
 	rev, ok := s.revoked[serial.String()]
 	usable := crlUsableAt(thisUpdate, nextUpdate, s.expiryGrace, now)

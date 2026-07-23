@@ -1106,3 +1106,27 @@ func TestFileSource_GetStatusUsesOneCRLSnapshotAcrossReload(t *testing.T) {
 		t.Fatalf("SourceNextUpdate = %v, want %v from the valid snapshot", got.status.SourceNextUpdate, validNextUpdate)
 	}
 }
+
+func TestFileSource_GetStatusEvaluatesSnapshotAtAcquisitionTime(t *testing.T) {
+	beforeDelay := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	afterDelay := beforeDelay.Add(time.Hour)
+	currentTime := beforeDelay
+
+	s := &FileSource{
+		issuerCert: testIssuerCert,
+		revoked:    map[string]pkix.RevokedCertificate{},
+		thisUpdate: beforeDelay.Add(-time.Hour),
+		nextUpdate: beforeDelay.Add(30 * time.Minute),
+		statusNow: func() time.Time {
+			return currentTime
+		},
+		statusBeforeSnapshotHook: func() {
+			currentTime = afterDelay
+		},
+	}
+	s.loaded.Store(true)
+
+	if _, err := s.GetStatus(context.Background(), big.NewInt(42), testIssuerCert); !errors.Is(err, ErrSourceUnhealthy) {
+		t.Fatalf("GetStatus after CRL expiry = %v, want ErrSourceUnhealthy", err)
+	}
+}

@@ -129,6 +129,19 @@ func (c *countingSource) GetStatus(ctx context.Context, serial *big.Int, issuer 
 func (c *countingSource) Name() string  { return c.inner.Name() }
 func (c *countingSource) Healthy() bool { return c.inner.Healthy() }
 
+type nextUpdateSource struct {
+	nextUpdate time.Time
+}
+
+func (s *nextUpdateSource) GetStatus(context.Context, *big.Int, *x509.Certificate) (*source.CertStatus, error) {
+	return &source.CertStatus{
+		Status:           source.StatusGood,
+		SourceNextUpdate: s.nextUpdate,
+	}, nil
+}
+func (s *nextUpdateSource) Name() string  { return "next-update" }
+func (s *nextUpdateSource) Healthy() bool { return true }
+
 func makeRequest(t *testing.T, issuer *x509.Certificate, serial *big.Int) []byte {
 	t.Helper()
 	certTmpl := &x509.Certificate{SerialNumber: serial}
@@ -159,6 +172,22 @@ func TestHandle_Good(t *testing.T) {
 	resp := parseResp(t, sgn.IssuerCert(), der)
 	if resp.Status != xocsp.Good {
 		t.Fatalf("expected good, got %d", resp.Status)
+	}
+}
+
+func TestHandle_ForwardsSourceNextUpdate(t *testing.T) {
+	sgn := newTestSigner(t)
+	sourceNextUpdate := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	src := &nextUpdateSource{nextUpdate: sourceNextUpdate}
+	r := NewResponder(src, sgn, time.Minute, 100, false, nil, nil, nil)
+
+	der, err := r.Handle(context.Background(), makeRequest(t, sgn.IssuerCert(), big.NewInt(100)))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	resp := parseResp(t, sgn.IssuerCert(), der)
+	if !resp.NextUpdate.Equal(sourceNextUpdate) {
+		t.Fatalf("response nextUpdate = %v, want source nextUpdate %v", resp.NextUpdate, sourceNextUpdate)
 	}
 }
 

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Expired CRLs are no longer used. A CRL past its `NextUpdate` is refused at
+  load, and one that expires while running takes the file source unhealthy, so
+  the responder answers `unknown` instead of continuing to serve superseded
+  revocation data. Previously a stalled CRL publisher meant every certificate
+  revoked since the last publication was reported `good`, indefinitely, with
+  `/health` still green — the file never changes, so nothing detected it.
+
+### Added
+
+- `source.file.expiry_grace` keeps a CRL usable for a configured duration past
+  its `NextUpdate`, for CAs that publish late. Defaults to strict.
+
+### Fixed
+
+- The file source now logs why it went unhealthy. Reload failures were
+  discarded, so a responder that dropped to `unknown` gave an operator a 503
+  and nothing else to work from.
+
 ### Added
 
 - Dependabot configuration for Go modules, GitHub Actions, and Docker base

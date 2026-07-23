@@ -48,6 +48,9 @@ type SourceConfig struct {
 type FileSourceConfig struct {
 	CRLPath        string `yaml:"crl_path"`
 	ReloadInterval string `yaml:"reload_interval"`
+	// ExpiryGrace keeps a CRL usable past its NextUpdate. Optional; empty
+	// means strict, so an expired CRL is refused and answers become unknown.
+	ExpiryGrace string `yaml:"expiry_grace"`
 }
 
 type HTTPSourceConfig struct {
@@ -141,6 +144,15 @@ func (c *Config) validate() error {
 		}
 		if reloadInterval <= 0 {
 			return errors.New("ocsp-responder/config: source.file.reload_interval must be greater than 0")
+		}
+		if c.Source.File.ExpiryGrace != "" {
+			grace, err := time.ParseDuration(c.Source.File.ExpiryGrace)
+			if err != nil {
+				return fmt.Errorf("ocsp-responder/config: invalid source.file.expiry_grace: %w", err)
+			}
+			if grace < 0 {
+				return errors.New("ocsp-responder/config: source.file.expiry_grace must not be negative")
+			}
 		}
 	case "http":
 		if c.Source.HTTP.BaseURL == "" {

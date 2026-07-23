@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
@@ -44,18 +45,59 @@ type FileSource struct {
 	lastHashMu sync.RWMutex
 	lastHash   [sha256.Size]byte
 
+	// expiryGrace extends how long a CRL stays usable past its NextUpdate.
+	// Zero means strict: the CRL is rejected the moment it expires.
+	expiryGrace time.Duration
+
+	logger *slog.Logger
+
 	done chan struct{}
+}
+
+// FileSourceOption configures optional FileSource behaviour.
+type FileSourceOption func(*FileSource)
+
+// WithCRLExpiryGrace keeps a CRL usable for the given duration past its
+// NextUpdate.
+//
+// The default is strict — an expired CRL is refused, so the responder answers
+// `unknown` rather than serving revocation data the CA has already superseded.
+// That is the correct default for a revocation service, but it means a CA that
+// publishes late takes the responder down at the moment NextUpdate passes.
+// Trading a short window of slightly-stale data against an outage is the
+// operator's call, so it is opt-in rather than a built-in tolerance.
+func WithCRLExpiryGrace(d time.Duration) FileSourceOption {
+	return func(s *FileSource) { s.expiryGrace = d }
+}
+
+// WithLogger sets the logger used to report reload failures.
+func WithLogger(l *slog.Logger) FileSourceOption {
+	return func(s *FileSource) {
+		if l != nil {
+			s.logger = l
+		}
+	}
 }
 
 // NewFileSource creates a FileSource.
 // crlPath: path to the CRL file (PEM or DER auto-detected) or an HTTP(S) URL
 // reloadInterval: how often to check for file changes / re-download the URL
-func NewFileSource(crlPath string, reloadInterval time.Duration, issuerCert *x509.Certificate) (*FileSource, error) {
+func NewFileSource(crlPath string, reloadInterval time.Duration, issuerCert *x509.Certificate, opts ...FileSourceOption) (*FileSource, error) {
 	if issuerCert == nil {
 		return nil, fmt.Errorf("ocsp-responder/source: issuer certificate is required")
 	}
 	isURL := strings.HasPrefix(crlPath, "http://") || strings.HasPrefix(crlPath, "https://")
-	s := &FileSource{crlPath: crlPath, reloadInterval: reloadInterval, issuerCert: issuerCert, isURL: isURL, done: make(chan struct{})}
+	s := &FileSource{
+		crlPath:        crlPath,
+		reloadInterval: reloadInterval,
+		issuerCert:     issuerCert,
+		isURL:          isURL,
+		logger:         slog.Default(),
+		done:           make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.loadCRL(); err != nil {
 		return nil, err
 	}
@@ -124,15 +166,29 @@ func (s *FileSource) reloadLoop() {
 		case <-t.C:
 			if s.isURL {
 				if err := s.loadFromURL(); err != nil {
-					s.loaded.Store(false)
+					s.markUnhealthy(err)
 				}
 				continue
 			}
 			if err := s.reloadFromDiskIfChanged(); err != nil {
-				s.loaded.Store(false)
+				s.markUnhealthy(err)
 			}
 		}
 	}
+}
+
+// markUnhealthy takes the source out of service and says why. The responder
+// answers `unknown` from here on, which is correct but indistinguishable from
+// a dozen other causes unless the reason is recorded — an operator seeing
+// /health flip to 503 has nothing else to go on.
+func (s *FileSource) markUnhealthy(err error) {
+	wasHealthy := s.loaded.Swap(false)
+	if wasHealthy {
+		s.logger.Error("CRL source is unhealthy; answering unknown", "path", s.crlPath, "err", err)
+		return
+	}
+	// Already unhealthy — log at debug so a persistent failure does not flood.
+	s.logger.Debug("CRL source still unhealthy", "path", s.crlPath, "err", err)
 }
 
 // loadCRL dispatches to loadFromURL or loadFromDisk based on the path type.
@@ -237,6 +293,9 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	if err := verifyCRLForIssuer(rl, s.issuerCert); err != nil {
 		return err
 	}
+	if err := s.verifyCRLNotExpired(rl); err != nil {
+		return err
+	}
 
 	revoked := make(map[string]pkix.RevokedCertificate, len(rl.RevokedCertificateEntries))
 	for _, rc := range rl.RevokedCertificateEntries {
@@ -252,6 +311,30 @@ func (s *FileSource) parseCRLBytes(b []byte) error {
 	s.mu.Unlock()
 
 	s.loaded.Store(true)
+	return nil
+}
+
+// verifyCRLNotExpired rejects a CRL the CA has already superseded.
+//
+// Without this the responder keeps answering from the last CRL it managed to
+// read. Nothing else notices: content-hash change detection sees no change
+// because the file never changes, and /health stays green — so a certificate
+// revoked after the last successful publication is reported `good`
+// indefinitely. NextUpdate is optional per RFC 5280; a CRL without one carries
+// no expiry to enforce.
+func (s *FileSource) verifyCRLNotExpired(rl *x509.RevocationList) error {
+	if rl.NextUpdate.IsZero() {
+		return nil
+	}
+	deadline := rl.NextUpdate.Add(s.expiryGrace)
+	if time.Now().After(deadline) {
+		if s.expiryGrace > 0 {
+			return fmt.Errorf("ocsp-responder/source: CRL expired at %s (grace %s)",
+				rl.NextUpdate.UTC().Format(time.RFC3339), s.expiryGrace)
+		}
+		return fmt.Errorf("ocsp-responder/source: CRL expired at %s",
+			rl.NextUpdate.UTC().Format(time.RFC3339))
+	}
 	return nil
 }
 

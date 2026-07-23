@@ -160,6 +160,7 @@ A fully annotated example lives at
 | `signer.issuer_cert_file` | **required** | Issuer of the certificates being checked |
 | `signer.response_validity` | **required** | Response validity window, sets `nextUpdate` (e.g. `24h`) |
 | `source.type` | **required** | `file`, `http`, or `static` |
+| `source.file.expiry_grace` | strict | How long a CRL stays usable past its `NextUpdate`. Empty or `0s` refuses an expired CRL |
 | `cache.enabled` | `false` | In-memory response cache. The example config enables it |
 | `cache.ttl` | **required** | Cache entry lifetime (e.g. `1h`) — validated even when the cache is disabled |
 | `cache.max_entries` | `0` (cache inert) | Cache size cap. `0` silently disables caching |
@@ -201,6 +202,25 @@ refreshed on every `reload_interval`.
 The CRL's signature is verified against `signer.issuer_cert_file` before any of
 its entries are trusted, so a swapped or corrupted CRL is rejected instead of
 being served.
+
+**Expired CRLs are refused.** A CRL past its `NextUpdate` is not loaded, and one
+that expires while the responder is running takes the source unhealthy, so
+answers become `unknown` rather than a stale `good`. This matters because the
+failure is otherwise invisible: if publication stops, the file on disk never
+changes, so nothing detects that the data is obsolete while certificates
+revoked since then are still reported valid.
+
+If your CA publishes late, `expiry_grace` widens the window rather than taking
+the responder down at the moment `NextUpdate` passes:
+
+```yaml
+source:
+  type: "file"
+  file:
+    crl_path: "certs/ca.crl"
+    reload_interval: "5m"
+    expiry_grace: "30m"   # default is strict
+```
 
 ### `http` — a CA's REST API
 
@@ -340,7 +360,8 @@ uptime. Easy to forget about for a year.
   configured issuer's name and key hashes before any lookup happens, so the
   responder won't answer for a CA it isn't configured to speak for.
 - **CRLs are verified.** A CRL is checked against the configured issuer before
-  its entries are used.
+  its entries are used, and refused once past its `NextUpdate` (see
+  `expiry_grace`) so stale revocation data cannot be served as current.
 - **The signing key is never logged**, at any log level.
 - **Startup validation.** Missing EKU, a signer not issued by the configured
   issuer, a non-CA issuer, or a key that doesn't match the certificate are all

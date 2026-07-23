@@ -354,3 +354,41 @@ func TestDefaultListenAddr_IsNotPrivileged(t *testing.T) {
 		t.Fatalf("default port %d is privileged; binding it requires root", n)
 	}
 }
+
+func TestValidate_ExpiryGrace(t *testing.T) {
+	base := func(grace string) *Config {
+		return &Config{
+			Server: ServerConfig{ListenAddr: "127.0.0.1:18080"},
+			Signer: SignerConfig{
+				CertFile: "c", KeyFile: "k", IssuerCertFile: "i", ResponseValidity: "24h",
+			},
+			Source: SourceConfig{
+				Type: "file",
+				File: FileSourceConfig{CRLPath: "ca.crl", ReloadInterval: "5m", ExpiryGrace: grace},
+			},
+			Cache: CacheConfig{TTL: "1h"},
+		}
+	}
+	cases := []struct {
+		name    string
+		grace   string
+		wantErr bool
+	}{
+		{"empty is allowed and means strict", "", false},
+		{"zero is allowed", "0s", false},
+		{"positive duration", "10m", false},
+		{"negative is rejected", "-5m", true},
+		{"unparseable is rejected", "soon", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.grace).validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

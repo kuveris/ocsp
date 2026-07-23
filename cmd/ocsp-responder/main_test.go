@@ -63,7 +63,7 @@ func TestNewSource_Static(t *testing.T) {
 		Type:   "static",
 		Static: config.StaticSourceConfig{Status: "revoked"},
 	}}
-	src, err := newSource(cfg, nil)
+	src, err := newSource(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("newSource: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNewSource_File(t *testing.T) {
 		Type: "file",
 		File: config.FileSourceConfig{CRLPath: crlPath, ReloadInterval: "1m"},
 	}}
-	src, err := newSource(cfg, issuerCert)
+	src, err := newSource(cfg, issuerCert, nil)
 	if err != nil {
 		t.Fatalf("newSource: %v", err)
 	}
@@ -87,6 +87,32 @@ func TestNewSource_File(t *testing.T) {
 	}
 	if closer, ok := src.(interface{ Stop() }); ok {
 		closer.Stop()
+	}
+}
+
+func TestNewSource_FileWithExpiryGrace(t *testing.T) {
+	issuerCert, crlPath := writeTestCRL(t)
+	cfg := &config.Config{Source: config.SourceConfig{
+		Type: "file",
+		File: config.FileSourceConfig{CRLPath: crlPath, ReloadInterval: "1m", ExpiryGrace: "10m"},
+	}}
+	src, err := newSource(cfg, issuerCert, nil)
+	if err != nil {
+		t.Fatalf("newSource: %v", err)
+	}
+	if closer, ok := src.(interface{ Stop() }); ok {
+		closer.Stop()
+	}
+}
+
+func TestNewSource_FileBadExpiryGrace(t *testing.T) {
+	_, crlPath := writeTestCRL(t)
+	cfg := &config.Config{Source: config.SourceConfig{
+		Type: "file",
+		File: config.FileSourceConfig{CRLPath: crlPath, ReloadInterval: "1m", ExpiryGrace: "whenever"},
+	}}
+	if _, err := newSource(cfg, nil, nil); err == nil {
+		t.Fatal("expected an error for an unparseable expiry grace")
 	}
 }
 
@@ -105,7 +131,7 @@ func TestNewSource_HTTP(t *testing.T) {
 			},
 		},
 	}}
-	src, err := newSource(cfg, nil)
+	src, err := newSource(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("newSource: %v", err)
 	}
@@ -162,7 +188,7 @@ func TestNewSource_Errors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newSource(&config.Config{Source: tc.cfg}, nil)
+			_, err := newSource(&config.Config{Source: tc.cfg}, nil, nil)
 			if err == nil {
 				t.Fatal("expected an error")
 			}

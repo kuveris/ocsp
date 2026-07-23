@@ -190,10 +190,19 @@ Incoming requests are validated against the configured issuer's name and key
 hashes before any status lookup happens. A responder that answers for issuers it
 was not configured for is answering questions it has no authority over.
 
-### CRLs are verified against the configured issuer
+### CRLs are verified against the configured issuer, and for expiry
 
 A CRL is checked for issuer match and signature validity before its entries are
 trusted, so a swapped or corrupted CRL is rejected rather than served.
+
+It is also checked against its own `NextUpdate`. Content-hash change detection
+answers "did the file change", which is the wrong question when a publisher
+stalls: the file stays byte-identical and perfectly valid, while the data inside
+it silently goes obsolete. Without an expiry check the responder would keep
+answering `good` for certificates revoked since the last publication, forever,
+with nothing in the logs or `/health` to show for it. Expiry is refused by
+default; `expiry_grace` exists because a strict boundary turns a late-publishing
+CA into an outage, and that tradeoff belongs to the operator.
 
 ### Validation happens at startup
 

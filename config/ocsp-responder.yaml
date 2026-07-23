@@ -28,6 +28,12 @@ source:
   file:
     crl_path: "certs/ca.crl"        # PEM or DER
     reload_interval: "5m"           # Checks for changes
+    # Optional. How long a CRL stays usable past its NextUpdate. Empty or "0s"
+    # is strict: an expired CRL is refused and the responder answers "unknown"
+    # rather than serving revocation data the CA has superseded. Set a grace
+    # period if your CA publishes late and a short window of slightly-stale
+    # data is preferable to an outage.
+    expiry_grace: "0s"
 
   http:
     base_url: "https://ca.example.local:9000"

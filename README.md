@@ -272,17 +272,15 @@ and a suitable `response_mapping`. Any CA that publishes a CRL works with the
 | Endpoint | Description |
 |---|---|
 | `POST /` | DER-encoded OCSP request in the body → signed OCSP response |
-| `GET /{encoded}` | OCSP request encoded in the path (see note below) |
+| `GET /{encoded}` | Base64-encoded OCSP request in the path, per RFC 6960 A.1.1 |
 | `GET /health` | Health check — `200` when healthy, `503` when not |
 | `GET /metrics` | Prometheus metrics |
 
 Request bodies are capped at 10 KB; real OCSP requests are well under 1 KB.
 
-> **Note on `GET`:** the path segment is currently decoded as *unpadded
-> base64url* (`-`/`_`, no `=`). RFC 6960 specifies URL-encoded **standard**
-> base64 (`+`/`/`, with padding), which is what OpenSSL and browsers send. If
-> you are integrating a standards-compliant client over `GET`, use `POST`
-> until this is corrected.
+`GET` follows RFC 6960 Appendix A.1.1 — the URL-encoding of the standard base64
+encoding of the DER request. Unpadded standard base64 and both base64url forms
+are also accepted, so a client that picks a different variant still works.
 
 ## Observability
 

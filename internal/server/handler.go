@@ -40,8 +40,7 @@ func ServeOCSP(r *responder.Responder, cacheTTL time.Duration, metrics *Metrics,
 			}
 			requestDER = body
 		case http.MethodGet:
-			enc := req.PathValue("request")
-			b, err := base64.RawURLEncoding.DecodeString(enc)
+			b, err := decodeOCSPGetRequest(req.PathValue("request"))
 			if err != nil {
 				http.Error(w, "malformed request", http.StatusBadRequest)
 				return
@@ -72,6 +71,42 @@ func ServeOCSP(r *responder.Responder, cacheTTL time.Duration, metrics *Metrics,
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(respDER)
 	}
+}
+
+// ocspGetEncodings lists the base64 alphabets accepted for GET requests, in
+// order of preference.
+//
+// RFC 6960 Appendix A.1.1 defines a GET request as the url-encoding of the
+// base64 encoding of the DER request, where "base64" means the standard
+// alphabet with padding — so StdEncoding is the canonical form and is tried
+// first. The rest are lenient fallbacks: clients that omit padding, and the
+// base64url form this responder accepted exclusively before the RFC deviation
+// was fixed.
+//
+// Trying them in turn is unambiguous. The standard and URL alphabets differ
+// only in their two non-alphanumeric characters (+/ against -_), so any input
+// valid under one is either invalid under the others or, if purely
+// alphanumeric, decodes identically under both.
+var ocspGetEncodings = []*base64.Encoding{
+	base64.StdEncoding,
+	base64.RawStdEncoding,
+	base64.URLEncoding,
+	base64.RawURLEncoding,
+}
+
+// decodeOCSPGetRequest decodes the path segment of an OCSP GET request. The
+// segment arrives already percent-decoded from http.ServeMux, so the '+', '/'
+// and '=' characters that standard base64 produces are present verbatim.
+func decodeOCSPGetRequest(enc string) ([]byte, error) {
+	if enc == "" {
+		return nil, fmt.Errorf("ocsp-responder/server: empty OCSP GET request")
+	}
+	for _, e := range ocspGetEncodings {
+		if der, err := e.DecodeString(enc); err == nil {
+			return der, nil
+		}
+	}
+	return nil, fmt.Errorf("ocsp-responder/server: OCSP GET request is not valid base64")
 }
 
 // parseOCSPStatus parses the status from a signed DER OCSP response for metrics.

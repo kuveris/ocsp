@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -226,7 +227,10 @@ func postOCSP(t *testing.T, addr string, reqDER []byte) *xocsp.Response {
 
 func getOCSP(t *testing.T, addr string, reqDER []byte) *xocsp.Response {
 	t.Helper()
-	encoded := base64.RawURLEncoding.EncodeToString(reqDER)
+	// RFC 6960 Appendix A.1.1: the url-encoding of the base64 encoding of the
+	// DER request. "base64" here is the standard alphabet with padding, so the
+	// result must be percent-escaped before it can sit in a path segment.
+	encoded := url.PathEscape(base64.StdEncoding.EncodeToString(reqDER))
 	resp, err := http.Get("http://" + addr + "/" + encoded)
 	if err != nil {
 		t.Fatalf("GET: %v", err)

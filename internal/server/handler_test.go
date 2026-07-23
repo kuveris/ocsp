@@ -8,12 +8,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +201,11 @@ func TestServeOCSP_POST_ValidRequest(t *testing.T) {
 	}
 }
 
+// TestServeOCSP_GET_ValidRequest covers the unpadded base64url form, which is
+// not what RFC 6960 specifies but is what this responder accepted exclusively
+// before MXS-1778. Kept so the lenient fallback stays wired up and existing
+// callers do not break. The RFC-conformant path is covered by
+// TestServeOCSP_GET_RFC6960Encoding.
 func TestServeOCSP_GET_ValidRequest(t *testing.T) {
 	pki := setupTestPKI(t, time.Now().Add(24*time.Hour))
 	sgn, err := signer.NewSigner(pki.ocspCertPath, pki.ocspKeyPath, pki.issuerCertPath, time.Hour)
@@ -434,3 +442,93 @@ func (u *unhealthySource) GetStatus(_ context.Context, _ *big.Int, _ *x509.Certi
 }
 func (u *unhealthySource) Name() string  { return "unhealthy-stub" }
 func (u *unhealthySource) Healthy() bool { return false }
+
+// Encoding vectors below were produced with python3's base64 module and
+// cross-checked with `openssl base64`, deliberately not with Go's encoder.
+// A symmetric test — encoding with the same function the handler decodes with —
+// passes no matter which alphabet is chosen, which is how the base64url defect
+// survived until MXS-1778.
+func TestDecodeOCSPGetRequest(t *testing.T) {
+	cases := []struct {
+		name    string
+		encoded string
+		wantHex string
+		wantErr bool
+	}{
+		{"RFC 6960 standard base64, padded", "+/+/AA==", "fbffbf00", false},
+		{"standard base64, padding omitted", "+/+/AA", "fbffbf00", false},
+		{"standard base64, single byte", "+w==", "fb", false},
+		{"standard base64, two bytes", "+/8=", "fbff", false},
+		{"legacy base64url, unpadded", "-_-_AA", "fbffbf00", false},
+		{"legacy base64url, padded", "-_-_AA==", "fbffbf00", false},
+		{"alphabet-neutral input", "MIIBAA==", "30820100", false},
+		{"not base64", "!!!!", "", true},
+		{"empty", "", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeOCSPGetRequest(tc.encoded)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got % x", tc.encoded, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode %q: %v", tc.encoded, err)
+			}
+			if hex.EncodeToString(got) != tc.wantHex {
+				t.Fatalf("decode %q = %x, want %s", tc.encoded, got, tc.wantHex)
+			}
+		})
+	}
+}
+
+// TestServeOCSP_GET_RFC6960Encoding drives a real ServeMux over a real HTTP
+// connection so that percent-decoding of the path segment is exercised too,
+// rather than being simulated with SetPathValue.
+func TestServeOCSP_GET_RFC6960Encoding(t *testing.T) {
+	pki := setupTestPKI(t, time.Now().Add(24*time.Hour))
+	sgn, err := signer.NewSigner(pki.ocspCertPath, pki.ocspKeyPath, pki.issuerCertPath, time.Hour)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	src, _ := source.NewStaticSource("good")
+	r := responder.NewResponder(src, sgn, time.Minute, 100, true, nil, nil, nil)
+
+	certTmpl := &x509.Certificate{SerialNumber: big.NewInt(9)}
+	reqDER, err := xocsp.CreateRequest(certTmpl, pki.issuerCert, nil)
+	if err != nil {
+		t.Fatalf("CreateRequest: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{request}", ServeOCSP(r, time.Minute, nil, nil))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// RFC 6960 A.1.1: url-encoding of the base64 encoding of the DER request.
+	encoded := url.PathEscape(base64.StdEncoding.EncodeToString(reqDER))
+
+	httpResp, err := http.Get(srv.URL + "/" + encoded)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for RFC 6960 GET encoding, got %d", httpResp.StatusCode)
+	}
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp, err := xocsp.ParseResponseForCert(body, nil, pki.issuerCert)
+	if err != nil {
+		t.Fatalf("parse OCSP response: %v", err)
+	}
+	if resp.Status != xocsp.Good {
+		t.Fatalf("expected good, got %d", resp.Status)
+	}
+}

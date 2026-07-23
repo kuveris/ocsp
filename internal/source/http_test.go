@@ -509,6 +509,36 @@ func TestHTTPSource_RecordsUnmappedStatus(t *testing.T) {
 	}
 }
 
+func TestHTTPSource_RecordsMissingStatusField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"state": "good"})
+	}))
+	defer srv.Close()
+
+	s, err := NewHTTPSource(srv.URL, "", time.Second, ResponseMapping{
+		PathTemplate: "/c/{serial}", StatusField: "status", GoodValues: []string{"good"},
+	}, 1, time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewHTTPSource: %v", err)
+	}
+	obs := &testHTTPObserver{}
+	s.SetObserver(obs)
+
+	cs, err := s.GetStatus(context.Background(), big.NewInt(1), nil)
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if cs.Status != StatusUnknown {
+		t.Fatalf("expected unknown when the configured status field is absent, got %v", cs.Status)
+	}
+	if !s.Healthy() {
+		t.Fatal("a reachable CA with an unmappable response is still operational; health must stay true")
+	}
+	if !obs.hasClass("unmapped") {
+		t.Fatalf("expected an 'unmapped' source error for a missing status field, got classes %v", obs.classes)
+	}
+}
+
 // TestHTTPSource_NotFoundIsCleanUnknown guards against over-recording: a 404 is
 // the CA legitimately saying "I don't have this cert", not a misconfiguration,
 // so it must NOT record an unmapped error.

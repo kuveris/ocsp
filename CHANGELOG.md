@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-23
+
+No functional change. The binary and container image are equivalent to 0.1.1;
+this release exists to tag the CI change below.
+
 ### Changed
 
-- Coverage threshold lowered from 88% to 85%.
+- Coverage threshold lowered from 88% to 85%. Still above the 80% project
+  minimum, with more headroom for legitimately hard-to-test code.
 
 ## [0.1.1] — 2026-07-23
 
@@ -76,6 +82,7 @@ the responder has not yet been run against a production PKI.
 - The OCSP signing key is never logged, at any level.
 - Request bodies are capped at 10 KB.
 
-[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/kuveris/ocsp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kuveris/ocsp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kuveris/ocsp/releases/tag/v0.1.0

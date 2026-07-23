@@ -1,7 +1,7 @@
 # ocsp-responder — Design Document
 
 **Status:** Implemented; maintained as an architecture reference
-**Applies to:** v0.1.1
+**Applies to:** v0.1.2
 **Language:** Go 1.25+
 **Repo:** `github.com/kuveris/ocsp`
 

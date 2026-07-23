@@ -30,6 +30,10 @@ type TLSConfig struct {
 	MinVersion string `yaml:"min_version"` // "1.2" | "1.3", default "1.2"
 	ACMEHost   string `yaml:"acme_host"`   // optional: hostname for ACME certificate
 	ACMECAUrl  string `yaml:"acme_ca_url"` // optional: ACME directory URL (for internal CAs)
+	// ACMECacheDir is where issued certificates are persisted. Optional;
+	// defaults to server.DefaultACMECacheDir. Must be writable by the service
+	// user, or ACME certificates are re-ordered on every restart.
+	ACMECacheDir string `yaml:"acme_cache_dir"`
 }
 
 type SignerConfig struct {

@@ -243,9 +243,12 @@ func TestServerStart_TLSEnabledWithoutCertOrACME(t *testing.T) {
 
 func TestServerStart_TLSWithACMEHost(t *testing.T) {
 	s, addr := newTestServer(t, config.TLSConfig{
-		Enabled:   true,
-		ACMEHost:  "ocsp.test.invalid",
-		ACMECAUrl: "https://acme.test.invalid/directory",
+		Enabled:  true,
+		ACMEHost: "ocsp.test.invalid",
+		// Point the cache at a temp dir: the default is an absolute system
+		// path the test user has no business creating.
+		ACMECacheDir: filepath.Join(t.TempDir(), "acme"),
+		ACMECAUrl:    "https://acme.test.invalid/directory",
 	})
 	cancel, errCh := startAsync(t, s)
 	waitForListener(t, addr)
@@ -346,4 +349,80 @@ func mustPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
 		t.Fatalf("marshal key: %v", err)
 	}
 	return b
+}
+
+// TestACMECacheDir_DefaultIsAbsolute pins that the ACME cache does not depend
+// on the process working directory. A relative path resolved to /certs/acme in
+// the shipped container, which is a read-only mount — autocert then silently
+// fell back to in-memory and re-ordered a certificate on every restart, which
+// walks into CA rate limits.
+func TestACMECacheDir_DefaultIsAbsolute(t *testing.T) {
+	if !filepath.IsAbs(DefaultACMECacheDir) {
+		t.Fatalf("DefaultACMECacheDir %q must be absolute; a relative path follows the working directory", DefaultACMECacheDir)
+	}
+}
+
+func TestEnsureACMECacheDir(t *testing.T) {
+	t.Run("creates a missing directory", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "nested", "acme")
+		if err := ensureACMECacheDir(dir); err != nil {
+			t.Fatalf("expected the directory to be created: %v", err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("expected a directory at %s", dir)
+		}
+	})
+
+	t.Run("accepts an existing writable directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := ensureACMECacheDir(dir); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects an unwritable directory", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		dir := filepath.Join(t.TempDir(), "ro")
+		if err := os.Mkdir(dir, 0o500); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		err := ensureACMECacheDir(filepath.Join(dir, "acme"))
+		if err == nil {
+			t.Fatal("expected an unwritable cache location to be rejected at startup rather than silently degrading")
+		}
+		if !strings.Contains(err.Error(), "acme") {
+			t.Fatalf("expected the error to identify the ACME cache, got %v", err)
+		}
+	})
+}
+
+// TestServerStart_ACMEFailsOnUnwritableCache checks the failure surfaces from
+// Start rather than being swallowed.
+func TestServerStart_ACMEFailsOnUnwritableCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	parent := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(parent, 0o500); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	s, _ := newTestServer(t, config.TLSConfig{
+		Enabled:      true,
+		ACMEHost:     "ocsp.test.invalid",
+		ACMECacheDir: filepath.Join(parent, "acme"),
+	})
+	_, errCh := startAsync(t, s)
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected Start to fail when the ACME cache is unwritable")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return for an unwritable ACME cache")
+	}
 }

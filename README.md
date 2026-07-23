@@ -155,6 +155,7 @@ A fully annotated example lives at
 | `server.tls.min_version` | `1.2` | Minimum TLS version — `1.3` selects TLS 1.3, anything else is 1.2 |
 | `server.tls.acme_host` | — | Hostname for an automatic ACME certificate |
 | `server.tls.acme_ca_url` | — | ACME directory URL, for internal CAs |
+| `server.tls.acme_cache_dir` | `/var/lib/ocsp-responder/acme` | Where ACME certificates are persisted. Startup fails if it is not writable |
 | `signer.cert_file` | **required** | OCSP delegated signing certificate |
 | `signer.key_file` | **required** | Signing private key |
 | `signer.issuer_cert_file` | **required** | Issuer of the certificates being checked |
@@ -176,6 +177,14 @@ as "unset".
 One of these is easy to trip over: the cache is off unless you set both
 `cache.enabled: true` and a non-zero `cache.max_entries`. Starting from the
 shipped example config avoids it.
+
+If you enable ACME, the certificate cache must be writable and must survive
+restarts — the shipped Compose stacks mount a named volume at
+`/var/lib/ocsp-responder` for exactly this, and the systemd example uses
+`StateDirectory=`. Without persistence the responder re-orders a certificate on
+every restart, which exhausts the CA's duplicate-certificate rate limit and then
+leaves it unable to serve TLS at all. Startup fails loudly if the directory is
+not writable rather than degrading to an in-memory cache.
 
 OCSP is served over plain HTTP by design — responses are signed, so the
 transport doesn't need to be confidential. TLS is available if you want it, but

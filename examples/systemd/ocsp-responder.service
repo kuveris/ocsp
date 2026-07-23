@@ -4,6 +4,8 @@ Documentation=https://github.com/kuveris/ocsp
 After=network.target
 
 [Service]
+# Creates and owns /var/lib/ocsp-responder for the ACME certificate cache.
+StateDirectory=ocsp-responder
 Type=simple
 User=ocsp
 Group=ocsp

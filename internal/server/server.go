@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -75,11 +77,20 @@ func (s *Server) Start(ctx context.Context) error {
 				s.logger.Info("OCSP responder listening (TLS)", "addr", s.cfg.Server.ListenAddr)
 				errCh <- httpServer.ListenAndServeTLS(s.cfg.Server.TLS.CertFile, s.cfg.Server.TLS.KeyFile)
 			} else if s.cfg.Server.TLS.ACMEHost != "" {
+				cacheDir := s.cfg.Server.TLS.ACMECacheDir
+				if cacheDir == "" {
+					cacheDir = DefaultACMECacheDir
+				}
+				if err := ensureACMECacheDir(cacheDir); err != nil {
+					errCh <- err
+					return
+				}
 				m := &autocert.Manager{
 					Prompt:     autocert.AcceptTOS,
 					HostPolicy: autocert.HostWhitelist(s.cfg.Server.TLS.ACMEHost),
-					Cache:      autocert.DirCache("certs/acme"),
+					Cache:      autocert.DirCache(cacheDir),
 				}
+				s.logger.Info("ACME certificate cache", "dir", cacheDir)
 				if s.cfg.Server.TLS.ACMECAUrl != "" {
 					m.Client = &acme.Client{DirectoryURL: s.cfg.Server.TLS.ACMECAUrl}
 				}
@@ -107,6 +118,39 @@ func (s *Server) Start(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return httpServer.Shutdown(shutdownCtx)
+}
+
+// DefaultACMECacheDir is where ACME-issued certificates are persisted when
+// server.tls.acme_cache_dir is unset.
+//
+// Absolute by design. The previous relative "certs/acme" resolved against the
+// process working directory, which in the shipped container is / — landing the
+// cache inside the read-only /certs mount. autocert treats a failed cache write
+// as non-fatal and falls back to in-memory, so the only visible symptom was a
+// fresh certificate order on every restart, which is how a deployment walks
+// into a CA rate limit and then cannot serve TLS at all.
+const DefaultACMECacheDir = "/var/lib/ocsp-responder/acme"
+
+// ensureACMECacheDir creates the cache directory and proves it is writable
+// before the listener starts. Failing here is deliberate: a silent fallback to
+// in-memory looks healthy and only manifests as rate-limit exhaustion days
+// later.
+func ensureACMECacheDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
+	}
+	probe := filepath.Join(dir, ".writable")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("ocsp-responder/server: acme cache directory %s is not writable: %w", dir, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
+	}
+	if err := os.Remove(probe); err != nil {
+		return fmt.Errorf("ocsp-responder/server: acme cache directory %s: %w", dir, err)
+	}
+	return nil
 }
 
 func tlsMinVersion(v string) uint16 {

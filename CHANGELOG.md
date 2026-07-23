@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The ACME certificate cache is now configurable via
+  `server.tls.acme_cache_dir` and defaults to the absolute
+  `/var/lib/ocsp-responder/acme`. It was a path relative to the working
+  directory, which in the container resolved inside the read-only `/certs`
+  mount — autocert then fell back to in-memory and re-ordered a certificate on
+  every restart. Startup now fails if the directory is not writable instead of
+  degrading silently, and the Compose stacks mount a named volume for it.
 - Added `.dockerignore`. The build context previously carried `.git`, which
   differs on every checkout and so invalidated the source-copy layer and the
   compile behind it on every CI run — making the layer cache not merely useless

@@ -15,8 +15,14 @@ services:
     volumes:
       - ./config:/etc/ocsp-responder:ro
       - ./certs:/certs:ro
+      # Writable state for ACME-issued certificates. Without it they are
+      # re-ordered on every restart, which exhausts CA rate limits.
+      - ocsp-state:/var/lib/ocsp-responder
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+
+volumes:
+  ocsp-state:

@@ -41,8 +41,23 @@ jobs:
       - name: Lint (integration build tag)
         run: golangci-lint run --build-tags=integration ./...
 
+      # -race is the point here: the CRL reload goroutine and the response
+      # cache are both touched concurrently, and a data race in either is
+      # silent without the detector.
       - name: Run unit tests
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Run integration tests
-        run: go test -tags integration ./...
+        run: go test -race -tags integration ./...
+
+      - name: Coverage
+        run: |
+          go test -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-23
+
 ### Fixed
 
 - `server.listen_addr` now defaults to `0.0.0.0:8080` when omitted. Previously
@@ -19,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/responder` and `internal/server` are now at 100%; `server.Start`
   went from 8.8% to full coverage, including the TLS, ACME, misconfiguration
   and listen-failure paths.
+- CI and the release workflow now fail when total coverage drops below a
+  threshold, rather than printing the number and continuing. `make check`
+  enforces the same threshold locally.
 
 ## [0.1.0] — 2026-07-23
 
@@ -67,5 +72,6 @@ the responder has not yet been run against a production PKI.
 - The OCSP signing key is never logged, at any level.
 - Request bodies are capped at 10 KB.
 
-[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kuveris/ocsp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kuveris/ocsp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kuveris/ocsp/releases/tag/v0.1.0

@@ -19,6 +19,10 @@ var (
 	testIssuerCert *x509.Certificate
 	testIssuerKey  *rsa.PrivateKey
 	testCRLPath    string
+	// testRevokedAt is the RevocationTime baked into the shared CRL fixture.
+	// Assertions compare against this rather than time.Now(), so they stay
+	// correct however long the package has been running under -count.
+	testRevokedAt time.Time
 )
 
 func TestMain(m *testing.M) {
@@ -54,9 +58,10 @@ func TestMain(m *testing.M) {
 	testIssuerCert = cert
 
 	testCRLPath = filepath.Join(tmpDir, "ca.crl")
+	testRevokedAt = time.Now().UTC().Truncate(time.Second)
 	if err := writeCRL(testCRLPath, cert, key, []pkix.RevokedCertificate{{
 		SerialNumber:   big.NewInt(42),
-		RevocationTime: time.Now(),
+		RevocationTime: testRevokedAt,
 	}}); err != nil {
 		os.Exit(1)
 	}
@@ -109,8 +114,12 @@ func TestFileSource_Revoked(t *testing.T) {
 	if cs.RevocationInfo == nil {
 		t.Fatalf("expected revocation info")
 	}
-	if time.Since(cs.RevocationInfo.RevokedAt) > 10*time.Second {
-		t.Fatalf("revokedAt too old: %v", cs.RevocationInfo.RevokedAt)
+	// Compare against the fixture's own timestamp, not elapsed wall-clock time:
+	// TestMain builds the CRL once, so a time.Since() bound breaks under -count
+	// as soon as the package has been running longer than the bound.
+	if delta := cs.RevocationInfo.RevokedAt.Sub(testRevokedAt); delta < -time.Second || delta > time.Second {
+		t.Fatalf("revokedAt %v does not match fixture %v (delta %v)",
+			cs.RevocationInfo.RevokedAt, testRevokedAt, delta)
 	}
 }
 

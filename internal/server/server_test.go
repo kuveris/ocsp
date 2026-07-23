@@ -159,6 +159,22 @@ func TestServerStart_ServesAndShutsDownGracefully(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("Start did not return after context cancellation")
 	}
+
+	// Start returning nil is not evidence the server stopped — it would also
+	// return nil if Shutdown were never called and the listener leaked. Assert
+	// the address has actually stopped serving.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := (&http.Client{Timeout: time.Second}).Get("http://" + addr + "/health")
+		if err != nil {
+			break
+		}
+		_ = r.Body.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("server still serving after Start returned; Shutdown did not take effect")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func TestServerStart_TLSWithCertAndKey(t *testing.T) {
@@ -183,8 +199,23 @@ func TestServerStart_TLSWithCertAndKey(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 over TLS, got %d", resp.StatusCode)
 	}
-	if resp.TLS == nil || resp.TLS.Version != tls.VersionTLS13 {
-		t.Fatalf("expected TLS 1.3 from min_version 1.3, got %v", resp.TLS)
+	if resp.TLS == nil {
+		t.Fatal("expected a TLS connection")
+	}
+
+	// Asserting the negotiated version is 1.3 proves nothing: Go's client and
+	// server both prefer 1.3 regardless of MinVersion, so that assertion holds
+	// even if the configured min_version never reaches the listener. Pin a
+	// client to 1.2 instead — with min_version "1.3" the handshake must fail.
+	tls12Client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // self-signed test cert
+			MaxVersion:         tls.VersionTLS12,
+		},
+	}}
+	if r, err := tls12Client.Get("https://" + addr + "/health"); err == nil {
+		_ = r.Body.Close()
+		t.Fatal("a TLS 1.2 client succeeded against a server configured with min_version 1.3")
 	}
 
 	cancel()
@@ -219,9 +250,22 @@ func TestServerStart_TLSWithACMEHost(t *testing.T) {
 	cancel, errCh := startAsync(t, s)
 	waitForListener(t, addr)
 
-	// No certificate can be issued against an unreachable directory, so this
-	// only asserts that the ACME branch wires up a listener and shuts down
-	// cleanly — not that ACME itself works.
+	// No certificate can be issued against an unreachable directory, so ACME
+	// itself cannot be exercised. What is checkable is that the branch built a
+	// TLS listener at all: a plaintext HTTP request must not succeed against
+	// it. Without this the whole branch could be replaced by a plain
+	// ListenAndServe and the test would still pass.
+	// A plaintext request to a Go TLS listener does not error at the client —
+	// crypto/tls replies with a plain "400 Client sent an HTTP request to an
+	// HTTPS server". So assert on the status: a plaintext /health must not
+	// return 200, which it would if this branch built a non-TLS listener.
+	if r, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + addr + "/health"); err == nil {
+		defer func() { _ = r.Body.Close() }()
+		if r.StatusCode == http.StatusOK {
+			t.Fatal("ACME listener answered plaintext /health with 200; expected a TLS listener")
+		}
+	}
+
 	cancel()
 	select {
 	case err := <-errCh:

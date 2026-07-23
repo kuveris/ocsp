@@ -36,8 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path meant the configured file was not the one in use. **Breaking** for any
   config carrying extra keys.
 
+### Security
+
+- Release workflow actions on the publishing jobs are pinned to commit SHAs
+  rather than mutable major tags, and the publish job now builds the exact
+  commit the test job validated rather than re-resolving the tag.
+- Published images now carry an SBOM and full build provenance.
+
 ### Fixed
 
+- The release step is idempotent, so a re-run after a partial failure completes
+  instead of aborting with "release already exists".
 - The ACME certificate cache is now configurable via
   `server.tls.acme_cache_dir` and defaults to the absolute
   `/var/lib/ocsp-responder/acme`. It was a path relative to the working

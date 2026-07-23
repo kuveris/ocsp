@@ -218,6 +218,46 @@ forge an answer. Cache eviction at `max_entries` drops an arbitrary entry rather
 than the oldest — acceptable because every entry is independently valid and a
 miss costs one source lookup.
 
+### Release supply chain: what is hardened and what is not
+
+The actions on the `publish` and `release` jobs are pinned to commit SHAs, not
+major tags. Those jobs hold a `packages: write` token that can overwrite the
+image every consumer pulls, and the March 2025 `tj-actions/changed-files`
+compromise worked precisely by retargeting a mutable tag. The `test` job keeps
+readable major tags: its token is read-only and it publishes nothing, so the
+readability is worth more than the marginal risk. Dependabot updates SHA pins in
+place with the version comment intact, so this costs nothing ongoing.
+
+`publish` checks out `github.sha` rather than the tag ref, so it builds exactly
+the commit the `test` job validated — a tag is mutable and the two jobs resolve
+it independently.
+
+Three related items were considered and **declined**, recorded here so they are
+not re-litigated:
+
+- **Signing with cosign.** The build emits an SBOM and full provenance
+  attestations, which describe what is in the image and how it was built. That
+  is metadata, not a signature — it is not equivalent to `cosign sign`, and this
+  document should not imply otherwise. Keyless signing would add an OIDC flow
+  and, more to the point, verification tooling on the consumer side that nobody
+  has asked for. Worth revisiting if the image acquires users who would actually
+  run `cosign verify`.
+- **Guarding `latest` against a backport.** `metadata-action`'s `latest=auto`
+  tags whichever non-prerelease semver arrived most recently, so releasing
+  `v1.2.4` after `v2.0.0` would move `latest` backwards. There are no release
+  branches, so the situation cannot arise yet. The trigger for fixing it is the
+  first maintenance branch, not a calendar date.
+- **Bringing the golangci-lint pin under an updater.** It is installed with
+  `go install ...@v2.12.2` from a `run:` block, which no Dependabot ecosystem
+  can see. The two ways to fix that are a `tool` directive in go.mod, which
+  drags the linter's dependency tree into the module graph and the
+  `go mod tidy` check, or switching to `golangci-lint-action`, which only moves
+  the problem — Dependabot would track the action while the `version:` input
+  stayed manual. Neither is worth it, because the risk here is smaller than it
+  looks: a pinned `go install` does not rot. It keeps working indefinitely; it
+  simply does not upgrade itself. This is a manually-managed pin, and that is
+  the accepted state rather than an oversight.
+
 ### Metrics use a per-instance registry
 
 `NewMetrics` returns its own `*prometheus.Registry` rather than registering on

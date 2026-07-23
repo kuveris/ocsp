@@ -1,54 +1,59 @@
 # ocsp-responder — Design Document
 
-**Version:** 0.2.0  
-**Status:** Implemented (maintained as architecture reference)  
-**Language:** Go 1.22+  
-**Repo:** `github.com/kuveris/ocsp`  
+**Status:** Implemented; maintained as an architecture reference
+**Applies to:** v0.1.0
+**Language:** Go 1.25+
+**Repo:** `github.com/kuveris/ocsp`
+
+This document explains *why* the responder is shaped the way it is. For
+installation and configuration, see [README.md](README.md).
 
 ---
 
-## 1. Projektbeschreibung
+## 1. Scope
 
-`ocsp-responder` ist ein eigenständiger, domain- und projektunabhängiger
-OCSP-Responder (RFC 6960). Er ist nicht an Encromail, step-ca oder eine
-spezifische CA-Software gebunden.
+`ocsp-responder` is a standalone OCSP responder (RFC 6960), independent of any
+particular CA software.
 
-**Einsatzszenarien:**
-- Interne PKI jeder Art (step-ca, OpenSSL CA, EJBCA, XCA, ...)
-- Homelab mit eigener CA
-- Als Sidecar neben einem beliebigen CA-Server
-- Überall wo Mail-Clients, Browser oder andere TLS-Clients
-  Zertifikatsstatus prüfen müssen
+**Intended use:**
 
-**Was der Responder nicht ist:**
-- Kein CA-Server
-- Kein Zertifikat-Manager
-- Keine Anbindung an eine spezifische CA-Software
-- Kein Revocation-Tool (Widerruf passiert in der CA — dieser Service antwortet nur)
+- Internal PKI of any flavour — step-ca, OpenSSL CA, EJBCA, XCA
+- Homelab CAs
+- As a sidecar next to an arbitrary CA server
+- Anywhere mail clients, browsers, or other TLS clients need to check
+  certificate status
+
+**Explicit non-goals:**
+
+- Not a CA server
+- Not a certificate manager
+- Not tied to any specific CA implementation
+- Not a revocation tool — revocation happens in the CA; this service only
+  reports what the CA already decided
 
 ---
 
-## 2. Architektur
+## 2. Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
 │              ocsp-responder                      │
 │                                                  │
-│  POST /   ← OCSP Request (DER)                   │
-│  GET  /{base64} ← OCSP Request (RFC 6960 GET)    │
+│  POST /          ← OCSP request (DER body)       │
+│  GET  /{base64}  ← OCSP request (RFC 6960 A.1.1) │
 │                                                  │
 │  ┌──────────────┐    ┌────────────────────────┐  │
 │  │ HTTP Handler │───▶│  Responder Core        │  │
 │  └──────────────┘    │  (golang.org/x/crypto) │  │
 │                      └──────────┬─────────────┘  │
-│                                 │                 │
+│                                 │                │
 │                      ┌──────────▼─────────────┐  │
 │                      │  Status Source         │  │
 │                      │  (pluggable interface) │  │
 │                      └──────────┬─────────────┘  │
-│                                 │                 │
+│                                 │                │
 │            ┌────────────────────┼──────────────┐ │
-│            ▼                    ▼              ▼  │
+│            ▼                    ▼              ▼ │
 │      ┌──────────┐        ┌──────────┐  ┌────────┐│
 │      │  File    │        │  HTTP    │  │ Static ││
 │      │  Source  │        │  Source  │  │ Source ││
@@ -57,72 +62,64 @@ spezifische CA-Software gebunden.
 └──────────────────────────────────────────────────┘
 ```
 
-### Status Sources
+### Why a Source interface
 
-Der Responder weiß von sich aus nicht ob ein Zertifikat gültig oder
-widerrufen ist — das weiß die CA. Die **Status Source** ist das
-Bindeglied. Sie ist ein Interface, hinter dem verschiedene Backends
-stecken können:
+The responder has no independent knowledge of whether a certificate is valid or
+revoked — only the CA does. The **Status Source** is the seam between the two,
+and making it an interface is what keeps the responder CA-agnostic. Supporting a
+new CA means configuring a mapping or, at worst, adding one implementation
+behind an existing interface — never touching the OCSP logic.
 
-| Source | Beschreibung | Wann sinnvoll |
+| Source | Description | When to use |
 |---|---|---|
-| `file` ✅ | Liest eine CRL-Datei (PEM oder DER), Hot-Reload, HTTP(S)-URL | step-ca, OpenSSL, jede CA mit CRL-Export |
-| `http` ✅ | Fragt eine CA-REST-API ab, konfigurierbares Response-Mapping, TLS-Pinning, Retry | step-ca API, EJBCA, jede CA mit HTTP-API |
-| `static` ✅ | Hardcodierte Antwort | Tests, Entwicklung |
+| `file` | Reads a CRL (PEM or DER), hot-reloads, accepts an HTTP(S) URL | step-ca, OpenSSL, any CA that exports a CRL |
+| `http` | Queries a CA REST API with a configurable response mapping, TLS pinning, retry | step-ca API, EJBCA, any CA with an HTTP API |
+| `static` | Fixed answer | Tests and development only |
+
+### Fail-closed
+
+The `Source` contract forbids returning `StatusGood` as an error fallback.
+A backend that cannot answer must return an error, which the responder turns
+into `unknown`. This is the single most important invariant in the design: the
+failure mode of a revocation service must never be "this certificate is fine".
 
 ---
 
-## 3. Projektstruktur
+## 3. Project structure
 
 ```
-ocsp-responder/
-├── cmd/
-│   └── ocsp-responder/
-│       └── main.go                  # Entrypoint
+ocsp/
+├── cmd/ocsp-responder/main.go     # Entrypoint: config load, wiring, signals
 ├── internal/
-│   ├── config/
-│   │   └── config.go                # Config structs + YAML loader
+│   ├── config/                    # Config structs, YAML loader, validation
 │   ├── source/
-│   │   ├── source.go                # Source interface + shared types
-│   │   ├── file.go                  # CRL-file backed Source
-│   │   ├── file_test.go
-│   │   ├── http.go                  # HTTP/REST API backed Source (Phase 2)
-│   │   ├── http_test.go
-│   │   └── static.go                # Static Source (immer good/revoked/unknown)
-│   ├── signer/
-│   │   ├── signer.go                # OCSP Signing Key + Cert laden
-│   │   └── signer_test.go
-│   ├── responder/
-│   │   ├── responder.go             # OCSP responder core + in-memory cache
-│   │   └── responder_test.go
+│   │   ├── source.go              # Source interface + shared types
+│   │   ├── file.go                # CRL-backed source (file or URL)
+│   │   ├── http.go                # CA REST API source
+│   │   └── static.go              # Fixed-answer source
+│   ├── signer/signer.go           # Signing cert/key, expiry monitoring
+│   ├── responder/responder.go     # OCSP core + in-memory response cache
 │   └── server/
-│       ├── server.go                # HTTP Server + graceful shutdown
-│       └── handler.go               # POST + GET + /health Handler
-├── config/
-│   └── ocsp-responder.yaml          # Beispiel-Konfiguration
-├── certs/
-│   ├── .gitkeep
-│   └── README.md                    # Erklärt welche Certs hier erwartet werden
-├── DESIGN.md
-├── go.mod
-├── Makefile
-└── .gitignore
+│       ├── server.go              # HTTP server, TLS/ACME, graceful shutdown
+│       ├── handler.go             # POST, GET, /health handlers
+│       └── metrics.go             # Prometheus collectors
+├── config/ocsp-responder.yaml     # Annotated example configuration
+├── examples/systemd/              # Unit file for non-container deployment
+├── integration_test.go            # End-to-end tests (build tag: integration)
+├── .golangci.yml                  # Lint configuration
+├── Dockerfile                     # Multi-stage, non-root runtime
+└── docker-compose.yaml
 ```
+
+Every package under `internal/` is unexported by construction — this is a
+service, not a library, and nothing here is a stable public API.
 
 ---
 
-## 4. Core Interface
+## 4. Core interface
 
 ```go
 // internal/source/source.go
-package source
-
-import (
-    "context"
-    "crypto/x509"
-    "math/big"
-    "time"
-)
 
 // Status represents the revocation status of a certificate.
 type Status int
@@ -163,144 +160,152 @@ type Source interface {
 
 ---
 
-## 5. Konfiguration
+## 5. Design decisions
 
-```yaml
-# config/ocsp-responder.yaml
+### CRL change detection uses a content hash, not mtime
 
-server:
-  listen_addr: "0.0.0.0:8080"
-  tls:
-    enabled: false
-    cert_file: ""
-    key_file: ""
+The file source re-reads the CRL on each interval and compares a SHA-256 digest
+against the loaded one. Comparing modification times was tried first and is
+wrong in two ways:
 
-signer:
-  # OCSP Delegated Signing Certificate + Key
-  # Muss extKeyUsage OCSPSigning haben
-  # Muss von derselben CA signiert sein wie die geprüften Zertifikate
-  cert_file: "certs/ocsp-signer.crt"
-  key_file:  "certs/ocsp-signer.key"
+- Filesystem timestamps come from a coarse clock, so two writes in quick
+  succession often share an mtime.
+- Timestamp-preserving copies — `cp -p`, `rsync -a`, `install -p`, backup
+  restores — can install a *newer* CRL with an *older* mtime.
 
-  # Intermediate CA Zertifikat (Issuer der zu prüfenden Zertifikate)
-  issuer_cert_file: "certs/intermediate-ca.crt"
+Either case leaves the responder serving a stale CRL indefinitely while
+reporting healthy, which means answering `good` for a revoked certificate. The
+extra read per interval is irrelevant next to that.
 
-  # Gültigkeitsdauer einer ausgestellten OCSP Response (NextUpdate)
-  response_validity: "24h"
+### Issuer binding is checked before lookup
 
-source:
-  type: "file"   # "file" | "http" | "static"
+Incoming requests are validated against the configured issuer's name and key
+hashes before any status lookup happens. A responder that answers for issuers it
+was not configured for is answering questions it has no authority over.
 
-  file:
-    crl_path: "certs/ca.crl"        # PEM oder DER
-    reload_interval: "5m"           # Prüft auf Dateiänderung
+### CRLs are verified against the configured issuer
 
-  http:
-    base_url: "https://ca.example.local:9000"
-    root_cert_file: "certs/root-ca.crt"
-    timeout: "10s"
+A CRL is checked for issuer match and signature validity before its entries are
+trusted, so a swapped or corrupted CRL is rejected rather than served.
 
-  static:
-    status: "good"   # "good" | "revoked" | "unknown"
+### Validation happens at startup
 
-cache:
-  enabled: true
-  ttl: "1h"
-  max_entries: 10000
+Missing `OCSPSigning` EKU, a signer not issued by the configured issuer, a
+non-CA issuer, or a key that does not match the certificate are all startup
+failures. Misconfiguration should prevent the service from starting, not produce
+wrong answers at runtime.
 
-logging:
-  level: "info"    # debug | info | warn | error
-  format: "json"   # json | text
-```
+### Caching is safe by construction
+
+OCSP responses are signed and carry their own validity window, so caching cannot
+forge an answer. Cache eviction at `max_entries` drops an arbitrary entry rather
+than the oldest — acceptable because every entry is independently valid and a
+miss costs one source lookup.
+
+### GET accepts more than the RFC requires
+
+RFC 6960 A.1.1 specifies the url-encoding of *standard* base64. That is the
+canonical form, tried first. Unpadded standard base64 and both base64url
+variants are also accepted, since the alphabets are distinguishable and
+rejecting a client over padding serves nobody.
 
 ---
 
-## 6. HTTP Endpunkte
+## 6. HTTP endpoints
 
 ```
 POST /
   Content-Type: application/ocsp-request
-  Body: DER-encoded OCSPRequest
+  Body: DER-encoded OCSPRequest (max 10 KB)
   → 200 + Content-Type: application/ocsp-response
-  → 400 bei malformed Request
+  → 400 on malformed request
+  → 413 if the body exceeds the limit
 
-GET /{base64url-encoded-request}
-  → Selbe Logik, GET-Variante per RFC 6960 Section 5
-  → Setzt Cache-Control Header für Proxy-Caching
+GET /{base64-encoded-request}
+  → Same logic, per RFC 6960 Appendix A.1.1
+  → Sets Cache-Control for proxy caching
 
 GET /health
-  → 200 + {"status":"ok","signer_valid":true,"source":"file","source_healthy":true}
-  → 503 wenn Signer abgelaufen oder Source unhealthy
+  → 200 + {"status":"ok","signer_valid":true,"signer_expires_in_days":312,
+           "signer_expiry_status":"ok","source":"file","source_healthy":true}
+  → 503 if the signer is invalid/expired or the source is unhealthy
+
+GET /metrics
+  → Prometheus exposition format
 ```
 
 ---
 
-## 7. Abhängigkeiten
+## 7. Dependencies
 
-| Library | Zweck |
+| Library | Purpose |
 |---|---|
-| `golang.org/x/crypto/ocsp` | OCSP Request/Response parsen, Response bauen, signieren |
-| `golang.org/x/crypto/acme/autocert` | Automatisches TLS via ACME (optional) |
-| `crypto/x509` (stdlib) | Zertifikat-Handling, CRL-Parsing |
-| `net/http` (stdlib) | HTTP Server |
-| `gopkg.in/yaml.v3` | Config |
-| `github.com/prometheus/client_golang` | Prometheus Metrics (`/metrics`) |
+| `golang.org/x/crypto/ocsp` | Parse OCSP requests, build and sign responses |
+| `golang.org/x/crypto/acme/autocert` | Automatic TLS via ACME (optional) |
+| `crypto/x509` (stdlib) | Certificate handling, CRL parsing |
+| `net/http` (stdlib) | HTTP server and routing |
+| `gopkg.in/yaml.v3` | Configuration |
+| `github.com/prometheus/client_golang` | Prometheus metrics |
 
-Eigencode beschränkt sich auf Source-Interface, Config, HTTP-Handler, Cache.
-cfssl wird **nicht** verwendet — `golang.org/x/crypto/ocsp` deckt alle OCSP-Operationen ab.
+First-party code is limited to the source interface, config, HTTP handlers,
+signer wiring, and the cache. `golang.org/x/crypto/ocsp` covers every OCSP
+operation, so no external OCSP toolkit is required.
 
 ---
 
-## 8. Implementierungsphasen
+## 8. Implementation status
 
-### Phase 1 — Funktionierender Responder mit CRL-Source
+All three phases are complete.
 
-- [ ] `source.Source` Interface + shared types
-- [ ] `source.Static`: konfigurierbare Antwort, für Tests
-- [ ] `source.File`: CRL laden (PEM + DER), Serials indizieren, Hot-Reload
-- [ ] `signer.Signer`: Key + Cert laden, OCSPSigning EKU validieren
-- [ ] `responder.Responder`: cfssl-Wrapper + in-memory Cache mit TTL
-- [ ] HTTP Handler: POST + GET (base64) + `/health`
-- [ ] Graceful Shutdown (SIGTERM, 10s Timeout)
-- [ ] Structured Logging: serial, status, source, cache_hit, duration_ms
-- [ ] Tests (siehe Abschnitt 11)
-- [ ] `certs/README.md`: erklärt welche Dateien erwartet werden und wie man sie erstellt
+### Phase 1 — Working responder with a CRL source
 
-### Phase 2 — HTTP Source
+- [x] `source.Source` interface and shared types
+- [x] `source.Static`: configurable answer, for tests
+- [x] `source.File`: CRL loading (PEM + DER), serial indexing, hot reload
+- [x] `signer.Signer`: key/cert loading, `OCSPSigning` EKU validation
+- [x] `responder.Responder`: OCSP core plus in-memory cache with TTL
+- [x] HTTP handlers: POST, GET, `/health`
+- [x] Graceful shutdown (SIGTERM, 10s timeout)
+- [x] Structured logging
 
-- [x] `source.HTTP`: generischer REST-Client
-- [x] Konfigurierbare Response-Interpretation (PathTemplate, StatusField, GoodValues, RevokedValues)
-- [x] TLS-Verifikation mit Root-Cert-Pinning
-- [x] Retry mit exponential Backoff
-- [x] In-Memory-Cache mit konfigurierbarem TTL
-- [x] Observer-Interface für Prometheus-Metriken
+### Phase 2 — HTTP source
+
+- [x] `source.HTTP`: generic REST client
+- [x] Configurable response mapping (path template, status field, good/revoked values)
+- [x] TLS verification with root certificate pinning
+- [x] Retry with backoff
+- [x] In-memory cache with configurable TTL
+- [x] Observer interface for Prometheus metrics
 
 ### Phase 3 — Hardening
 
-- [x] Signer-Cert Expiry-Monitoring (Log-Warnung/Error bei <30/<8 Tagen, Background-Goroutine)
-- [x] Prometheus Metrics (`/metrics`) — `ocsp_requests_total`, `ocsp_request_duration_seconds`, Cache- und Source-Metriken
-- [x] TLS für den HTTP-Server selbst (cert+key oder ACME/autocert)
-- [x] Dockerfile (multi-stage, non-root user)
-- [x] systemd Unit-Datei Beispiel (`examples/systemd/`)
+- [x] Signer certificate expiry monitoring (warning under 30 days, critical under 8)
+- [x] Prometheus metrics at `/metrics`
+- [x] TLS for the HTTP server (manual cert+key or ACME/autocert)
+- [x] Dockerfile (multi-stage, non-root)
+- [x] systemd unit example
 
 ---
 
-## 9. Sicherheitshinweise
+## 9. Security notes
 
-- OCSP Signing Key **niemals** loggen — auch nicht bei DEBUG
-- `certs/` Verzeichnis komplett in `.gitignore`
-- Signer-Key Dateiberechtigung: `600`, Owner: Service-User
-- Bei Source-Fehler: **`StatusUnknown` zurückgeben, niemals `StatusGood` als Fallback**
-- OCSP Responses sind signiert — Caching ist sicher und ausdrücklich erwünscht
+- The OCSP signing key is never logged, at any level
+- `certs/` is gitignored in full
+- Signing key file permissions: `600`, owned by the service user
+- On source error: return `StatusUnknown`, **never** `StatusGood`
+- Requests are validated against configured issuer bindings before lookup
+- CRLs are verified against the configured issuer before use
+- OCSP responses are signed, so caching is safe and intended
+- Request bodies are capped at 10 KB
+- The container image runs as a non-root user
 
 ---
 
-## 10. Nutzung mit verschiedenen CAs
+## 10. Using it with different CAs
 
-### step-ca + CRL
+### step-ca with a CRL
 
 ```bash
-# CRL aus step-ca exportieren
 step ca crl --out certs/ca.crl
 # → source.type: "file", file.crl_path: "certs/ca.crl"
 ```
@@ -309,39 +314,40 @@ step ca crl --out certs/ca.crl
 
 ```bash
 openssl ca -gencrl -out ca.crl.pem -config openssl.cnf
-# Oder als DER:
+# Or as DER:
 openssl crl -in ca.crl.pem -outform DER -out certs/ca.crl
-# → source.type: "file" — funktioniert mit PEM und DER
+# → source.type: "file" — PEM and DER are auto-detected
 ```
 
-### Jede andere CA
+### Any other CA
 
-Jede CA die eine CRL exportieren kann → `file` Source.
-Jede CA mit HTTP API → `http` Source (Phase 2).
+Any CA that can export a CRL works with the `file` source. Any CA with an HTTP
+status API works with the `http` source and a suitable response mapping.
 
 ---
 
-## 11. Tests
+## 11. Testing
 
-```
-internal/source/file_test.go
-  TestFileSource_Good          → Serial nicht in CRL → StatusGood
-  TestFileSource_Revoked       → Serial in CRL → StatusRevoked + RevokedAt korrekt
-  TestFileSource_Unknown       → CRL vorhanden aber Serial fehlt → StatusUnknown
-  TestFileSource_Reload        → CRL-Datei ändert sich → neuer Status erkannt
-  TestFileSource_InvalidCRL    → korrupte Datei → Fehler, kein Panic, Healthy()=false
+Roughly 146 tests across six packages, plus an end-to-end suite behind the
+`integration` build tag.
 
-internal/responder/responder_test.go
-  TestHandle_Good              → gültiger Request → signierte Good-Response
-  TestHandle_Revoked           → widerrufene Serial → signierte Revoked-Response
-  TestHandle_Unknown           → unbekannte Serial → Unknown-Response
-  TestHandle_MalformedRequest  → zufälliges DER → Fehler zurück
-  TestHandle_SignatureValid    → Response mit Signer-Cert verifizierbar
-  TestHandle_CacheHit          → zweiter Request → Source nur einmal befragt
-  TestHandle_SourceError       → Source gibt error → Unknown, niemals Good
+| Package | Focus |
+|---|---|
+| `internal/config` | Loading, validation of every required field and duration |
+| `internal/source` | CRL parsing (PEM/DER), reload, issuer verification, HTTP source mapping, retry, error classification |
+| `internal/signer` | Cert/key loading (RSA and ECDSA, PKCS#1 and PKCS#8), EKU and trust validation, expiry thresholds |
+| `internal/responder` | Status handling, issuer binding, cache behaviour, fail-closed on source errors |
+| `internal/server` | Handlers for POST/GET/health, request limits, GET encodings, metrics recording |
+| `integration_test.go` | Full server over real HTTP: POST, GET, health, cache, reload |
 
-internal/signer/signer_test.go
-  TestSigner_ValidCert         → korrektes OCSPSigning EKU → geladen
-  TestSigner_MissingOCSPEKU   → falsches EKU → Fehler beim Laden
-  TestSigner_ExpiredCert       → abgelaufenes Cert → geladlen aber Warnung geloggt
-```
+Two conventions worth preserving:
+
+- **Do not encode test fixtures with the function under test.** The GET handler
+  accepted a non-RFC base64 alphabet for months because both the unit and
+  integration tests encoded with the same function the handler decoded with.
+  Encoding vectors now come from an independent tool.
+- **Do not assert against wall-clock elapsed time.** Compare against the value a
+  fixture was built with, so the suite survives `-count=N`.
+
+CI runs vet, golangci-lint (with and without the integration tag), the unit and
+integration suites under `-race`, a coverage report, and a Docker image build.

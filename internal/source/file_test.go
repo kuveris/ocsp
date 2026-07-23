@@ -932,6 +932,25 @@ func TestFileSource_LogsExpiryOnce(t *testing.T) {
 	}
 }
 
+func TestFileSource_LogsNotYetValidOnce(t *testing.T) {
+	buf := &lockedBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	s := &FileSource{
+		crlPath:    "future.crl",
+		thisUpdate: time.Now().Add(time.Hour),
+		nextUpdate: time.Now().Add(2 * time.Hour),
+		logger:     logger,
+	}
+
+	s.checkExpiry()
+	s.checkExpiry()
+
+	out := buf.String()
+	if n := strings.Count(out, "CRL is not yet valid"); n != 1 {
+		t.Fatalf("expected the not-yet-valid condition to be logged exactly once at Info+, got %d occurrences in:\n%s", n, out)
+	}
+}
+
 // lockedBuffer is a concurrency-safe io.Writer for capturing log output that a
 // background goroutine produces.
 type lockedBuffer struct {

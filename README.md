@@ -212,21 +212,18 @@ The CRL's signature is verified against `signer.issuer_cert_file` before any of
 its entries are trusted, so a swapped or corrupted CRL is rejected instead of
 being served.
 
-**A CRL outside its validity window is not served.** Both ends are checked: a
-CRL past its `NextUpdate` and one whose `ThisUpdate` is still in the future
-(post-dated, or a host clock that is behind) take the source unhealthy, with a
-few minutes of clock-skew tolerance so a freshly published CRL is not rejected.
-
-**Expired CRLs are not served.** Expiry is checked live on every lookup, so a
-CRL past its `NextUpdate` takes the source unhealthy and answers become
-`unknown` rather than a stale `good` — whether it was already expired at
-startup or expires later while the file on disk never changes. This matters
-because the failure is otherwise invisible: if publication stops, the file
-never changes, so nothing detects that the data is obsolete while certificates
-revoked since then are still reported valid. An already-expired CRL at startup
-is a transient condition, not a fatal error: the responder starts, answers
-`unknown`, and recovers automatically when the CA publishes — a routine
-publication delay should not become a crash loop.
+**A CRL outside its validity window is not served.** Both ends are checked live
+on every lookup. A CRL whose `ThisUpdate` is more than five minutes in the
+future (post-dated, or a host clock that is behind) takes the source unhealthy.
+A CRL past its `NextUpdate` plus any configured `expiry_grace` does the same,
+and answers become `unknown` rather than a stale `good` — whether it was already
+expired at startup or expires later while the file on disk never changes. This
+matters because the failure is otherwise invisible: if publication stops, the
+file never changes, so nothing detects that the data is obsolete while
+certificates revoked since then are still reported valid. A CRL outside its
+validity window at startup is a transient condition, not a fatal error: the
+responder starts, answers `unknown`, and recovers automatically when the CRL
+becomes usable — a routine publication delay should not become a crash loop.
 
 If your CA publishes late, `expiry_grace` widens the window rather than taking
 the responder down at the moment `NextUpdate` passes:

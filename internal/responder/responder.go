@@ -190,6 +190,10 @@ type cache struct {
 	maxEntries   int
 	enabled      bool
 	entriesGauge prometheus.Gauge // optional, nil = no gauge update
+
+	// beforeExpiredDelete coordinates tests at the lock-upgrade boundary after
+	// an expired entry is observed and before the cache takes the write lock.
+	beforeExpiredDelete func()
 }
 
 type cacheEntry struct {
@@ -212,13 +216,26 @@ func (c *cache) getAt(key string, now time.Time) ([]byte, bool) {
 		return nil, false
 	}
 	if !now.Before(e.expiresAt) {
+		if c.beforeExpiredDelete != nil {
+			c.beforeExpiredDelete()
+		}
 		c.mu.Lock()
+		e = c.entries[key]
+		if e == nil {
+			c.mu.Unlock()
+			return nil, false
+		}
+		if now.Before(e.expiresAt) {
+			data := e.data
+			c.mu.Unlock()
+			return data, true
+		}
 		delete(c.entries, key)
 		n := len(c.entries)
-		c.mu.Unlock()
 		if c.entriesGauge != nil {
 			c.entriesGauge.Set(float64(n))
 		}
+		c.mu.Unlock()
 		return nil, false
 	}
 	return e.data, true

@@ -599,6 +599,86 @@ func TestCache_Get_GaugeUpdate(t *testing.T) {
 	}
 }
 
+func TestCache_GetAtPreservesConcurrentFreshReplacement(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	expiredRead := make(chan struct{})
+	resumeDelete := make(chan struct{})
+	gauge := &recordingGauge{Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "test_cache_concurrent_replacement_gauge",
+		Help: "test",
+	})}
+	c := &cache{
+		entries: map[string]*cacheEntry{
+			"k": {data: []byte("expired"), expiresAt: now.Add(-time.Minute)},
+		},
+		ttl:          time.Hour,
+		maxEntries:   10,
+		enabled:      true,
+		entriesGauge: gauge,
+		beforeExpiredDelete: func() {
+			close(expiredRead)
+			<-resumeDelete
+		},
+	}
+	gauge.Set(1)
+
+	type result struct {
+		data []byte
+		ok   bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		data, ok := c.getAt("k", now)
+		resultCh <- result{data: data, ok: ok}
+	}()
+
+	<-expiredRead
+	c.setAt("k", []byte("fresh"), now, now.Add(30*time.Minute))
+	close(resumeDelete)
+
+	got := <-resultCh
+	if !got.ok || string(got.data) != "fresh" {
+		t.Fatalf("getAt = %q, %v; want concurrent fresh replacement", got.data, got.ok)
+	}
+	if gauge.value != 1 {
+		t.Fatalf("gauge after concurrent replacement = %v, want 1", gauge.value)
+	}
+}
+
+func TestCache_GetAtHandlesConcurrentRemoval(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	expiredRead := make(chan struct{})
+	resumeDelete := make(chan struct{})
+	c := &cache{
+		entries: map[string]*cacheEntry{
+			"k": {data: []byte("expired"), expiresAt: now.Add(-time.Minute)},
+		},
+		ttl:        time.Hour,
+		maxEntries: 10,
+		enabled:    true,
+		beforeExpiredDelete: func() {
+			close(expiredRead)
+			<-resumeDelete
+		},
+	}
+
+	resultCh := make(chan bool, 1)
+	go func() {
+		_, ok := c.getAt("k", now)
+		resultCh <- ok
+	}()
+
+	<-expiredRead
+	c.mu.Lock()
+	delete(c.entries, "k")
+	c.mu.Unlock()
+	close(resumeDelete)
+
+	if ok := <-resultCh; ok {
+		t.Fatal("getAt returned a cache hit after concurrent removal")
+	}
+}
+
 func TestHandle_MetricsRecorded(t *testing.T) {
 	sgn := newTestSigner(t)
 	src, _ := source.NewStaticSource("good")

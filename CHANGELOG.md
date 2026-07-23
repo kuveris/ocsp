@@ -43,9 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than mutable major tags, and the publish job now builds the exact
   commit the test job validated rather than re-resolving the tag.
 - Published images now carry an SBOM and full build provenance.
+- All actions on the release workflow are SHA-pinned, not only the publishing
+  jobs.
 
 ### Fixed
 
+- Release notes now advertise the correct image tag. `docker/metadata-action`
+  strips the leading `v`, so the notes pointed at `ghcr.io/kuveris/ocsp:v0.1.2`
+  (a 404) instead of `:0.1.2`.
 - The release step is idempotent, so a re-run after a partial failure completes
   instead of aborting with "release already exists".
 - The ACME certificate cache is now configurable via

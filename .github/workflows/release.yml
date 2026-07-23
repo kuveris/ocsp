@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
@@ -125,6 +125,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
 
       # Every workflow-context value used below is bound through env and then
       # referenced as a quoted shell variable. Tag names are push-controlled
@@ -135,9 +137,12 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
+          # The image tag has no leading "v": docker/metadata-action's
+          # {{version}} strips it, so `ghcr.io/$REPO:${TAG#v}` is what was
+          # actually pushed. Advertising ":$TAG" points users at a 404.
           notes=$(printf '%s\n\n%s\n' \
             "See [CHANGELOG.md](https://github.com/$REPO/blob/$TAG/CHANGELOG.md) for what changed." \
-            "Container image: \`ghcr.io/$REPO:$TAG\`")
+            "Container image: \`ghcr.io/$REPO:${TAG#v}\`")
           # Idempotent: a re-run after a partially failed release would
           # otherwise abort with "release already exists".
           if gh release view "$TAG" >/dev/null 2>&1; then

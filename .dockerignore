@@ -28,6 +28,6 @@ ocsp-responder
 *.md
 docker-compose*.yaml
 .env
-.env.tpl
+.env.example
 examples
 scripts

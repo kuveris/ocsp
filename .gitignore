@@ -7,5 +7,5 @@ certs/*.p12
 /ocsp-responder
 coverage.out
 
-# Rendered from .env.tpl — never committed
+# Copied from .env.example — never committed
 .env

@@ -115,7 +115,7 @@ ocsp/
 ```
 
 Root also carries the usual project documents: `README.md`, `CHANGELOG.md`,
-`CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `CLAUDE.md`, and `.env.tpl`.
+`CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `CLAUDE.md`, and `.env.example`.
 
 Every package under `internal/` is unexported by construction — this is a
 service, not a library, and nothing here is a stable public API.

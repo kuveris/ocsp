@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -54,7 +55,8 @@ type FileSourceConfig struct {
 	CRLPath        string `yaml:"crl_path"`
 	ReloadInterval string `yaml:"reload_interval"`
 	// ExpiryGrace keeps a CRL usable past its NextUpdate. Optional; empty
-	// means strict, so an expired CRL is refused and answers become unknown.
+	// means strict, so an expired CRL is treated as unhealthy and answers
+	// become unknown.
 	ExpiryGrace string `yaml:"expiry_grace"`
 }
 
@@ -105,7 +107,11 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
+	// io.EOF means the document was empty or comment-only. Let it fall through
+	// to validate(), which reports the first missing required field — a far more
+	// useful message than a bare "EOF" pointing at nothing. (yaml.Unmarshal used
+	// to return nil here; the decoder returns EOF.)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("ocsp-responder/config: %w", err)
 	}
 

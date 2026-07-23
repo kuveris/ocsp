@@ -439,3 +439,32 @@ func TestLoad_ShippedExampleConfig(t *testing.T) {
 		t.Fatal("expected the example config to set a listen address")
 	}
 }
+
+// TestLoad_EmptyConfigReportsMissingField pins that an empty or comment-only
+// file falls through to validation with a useful message, rather than the bare
+// "EOF" the strict decoder returns for a document-less stream.
+func TestLoad_EmptyConfigReportsMissingField(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"empty", ""},
+		{"comment only", "# nothing here\n"},
+		{"whitespace", "   \n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "c.yaml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected a validation error for an empty config")
+			}
+			if strings.Contains(err.Error(), "EOF") {
+				t.Fatalf("expected a useful validation message, got a bare EOF: %v", err)
+			}
+			if !strings.Contains(err.Error(), "must be set") {
+				t.Fatalf("expected a missing-field message, got %v", err)
+			}
+		})
+	}
+}
